@@ -1,6 +1,7 @@
 mod utils;
 
 use wasm_bindgen::prelude::*;
+use web_sys::console;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -15,5 +16,5 @@ extern {
 
 #[wasm_bindgen]
 pub fn greet() {
-    alert("Hello, wraft!");
+    console::log_1(&"This is a thing".into());
 }
