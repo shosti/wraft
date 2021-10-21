@@ -1,3 +1,8 @@
-import * as wasm from "wrath";
+import { start } from "wrath";
 
-wasm.greet();
+const main = async () => {
+  const content = document.getElementById("content");
+  await start(content);
+}
+
+main();

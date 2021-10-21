@@ -11,4 +11,7 @@ module.exports = {
   plugins: [
     new CopyWebpackPlugin(['index.html'])
   ],
+  devServer: {
+    allowedHosts: ['wraft0', 'wraft1', 'wraft2'],
+  },
 };
