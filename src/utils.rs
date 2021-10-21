@@ -17,6 +17,9 @@ pub fn set_panic_hook() {
 
 pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
     let window = web_sys::window().expect("no global window");
+    // Keep reference to callback closure to prevent it from getting prematurely
+    // dropped.
+    let mut _closure: Option<Closure<dyn Fn()>> = None;
     let mut cb = |resolve: Function, _reject: Function| {
         let c = Closure::wrap(Box::new(move || {
             resolve.call0(&JsValue::UNDEFINED).unwrap();
@@ -28,7 +31,7 @@ pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
                 d.as_millis().try_into().unwrap(),
             )
             .unwrap();
-        c.forget();
+        _closure = Some(c);
     };
     let promise = Promise::new(&mut cb);
     let result = wasm_bindgen_futures::JsFuture::from(promise).await?;
