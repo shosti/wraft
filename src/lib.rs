@@ -1,8 +1,8 @@
 mod utils;
 
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use web_sys::{console, Element};
-use std::time::Duration;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -23,9 +23,16 @@ impl Raft {
     }
 }
 
-#[wasm_bindgen]
-pub async fn start(elem: Element) {
+#[wasm_bindgen(start)]
+pub async fn start() {
     utils::set_panic_hook();
+    let document = web_sys::window()
+        .expect("no global window")
+        .document()
+        .expect("window should have document");
+    let elem = document
+        .get_element_by_id("content")
+        .expect("No content found");
     let mut raft = Raft { elem: elem };
-    raft.run().await
+    raft.run().await;
 }
