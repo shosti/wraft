@@ -33,6 +33,6 @@ pub async fn start() {
     let elem = document
         .get_element_by_id("content")
         .expect("No content found");
-    let mut raft = Raft { elem: elem };
+    let mut raft = Raft { elem };
     raft.run().await;
 }

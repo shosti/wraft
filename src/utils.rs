@@ -3,6 +3,7 @@ use std::convert::TryInto;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use web_sys::window;
 
 pub fn set_panic_hook() {
     // When the `console_error_panic_hook` feature is enabled, we can call the
@@ -16,7 +17,6 @@ pub fn set_panic_hook() {
 }
 
 pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
-    let window = web_sys::window().expect("no global window");
     // Keep reference to callback closure to prevent it from getting prematurely
     // dropped.
     let mut _closure: Option<Closure<dyn Fn()>> = None;
@@ -25,7 +25,8 @@ pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
             resolve.call0(&JsValue::UNDEFINED).unwrap();
         }) as Box<dyn Fn()>);
 
-        window
+        window()
+            .expect("no global window")
             .set_timeout_with_callback_and_timeout_and_arguments_0(
                 c.as_ref().unchecked_ref(),
                 d.as_millis().try_into().unwrap(),
@@ -34,6 +35,5 @@ pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
         _closure = Some(c);
     };
     let promise = Promise::new(&mut cb);
-    let result = wasm_bindgen_futures::JsFuture::from(promise).await?;
-    Ok(result)
+    wasm_bindgen_futures::JsFuture::from(promise).await
 }
