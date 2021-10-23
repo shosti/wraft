@@ -27,26 +27,25 @@ enum CommandType {
 }
 
 pub async fn initiate(id: String, session_id: String) -> Result<(), JsValue> {
-    let introducer_ws = WebSocket::new(INTRODUCER)?;
-    introducer_ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+    let ws = WebSocket::new(INTRODUCER)?;
+    ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
     let onmessage_cb = Closure::wrap(Box::new(move |e: MessageEvent| {
         console_log!("E: {:#?}", e);
     }) as Box<dyn FnMut(MessageEvent)>);
-    introducer_ws.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
+    ws.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
 
     let (opened_tx, mut opened_rx) = channel::<()>(1);
     let onopen_cb = Closure::wrap(Box::new(move || {
         let mut tx = opened_tx.clone();
-        console_log!("Got OnOpen callback");
         spawn_local(async move {
             tx.send(()).await.unwrap();
         });
     }) as Box<dyn FnMut()>);
-    introducer_ws.set_onopen(Some(onopen_cb.as_ref().unchecked_ref()));
+    ws.set_onopen(Some(onopen_cb.as_ref().unchecked_ref()));
 
     match opened_rx.next().await {
-        Some(()) => (),
+        Some(()) => console_log!("Got a big fat nothing!"),
         None => panic!("Thought this couldn't happen?"),
     }
 
@@ -56,7 +55,8 @@ pub async fn initiate(id: String, session_id: String) -> Result<(), JsValue> {
         session_id,
         sdp_data: None,
     };
-    println!("JOIN_MESSAG: {:#?}", join_message);
+    let data = bincode::serialize(&join_message).unwrap();
+    ws.send_with_u8_array(&data)?;
     Ok(())
 }
 
