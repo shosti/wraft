@@ -1,4 +1,4 @@
-mod utils;
+pub mod util;
 mod webrtc_rpc;
 
 use futures::prelude::*;
@@ -14,15 +14,6 @@ use wasm_bindgen_futures::spawn_local;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-}
-
-macro_rules! console_log {
-    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-}
 // struct Raft {
 //     elem: Element,
 // }
@@ -38,7 +29,7 @@ macro_rules! console_log {
 
 #[wasm_bindgen(start)]
 pub async fn start() {
-    utils::set_panic_hook();
+    util::set_panic_hook();
     let hostname = get_window().location().hostname().expect("no hostname");
     let document = get_document();
 
