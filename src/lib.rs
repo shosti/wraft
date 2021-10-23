@@ -45,7 +45,7 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            introduce(hn.clone(), get_session_key(), true).await;
+            introduce(hn.clone(), get_session_key(), true).await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
@@ -62,7 +62,7 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            introduce(hn.clone(), get_session_key(), false).await;
+            introduce(hn.clone(), get_session_key(), false).await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     join_button.set_onclick(Some(join.as_ref().unchecked_ref()));
