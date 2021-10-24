@@ -7,8 +7,8 @@ pub async fn introduce(
     initiate: bool,
 ) -> Result<(), JsValue> {
     if initiate {
-        introduction::initiate(id, session_id).await
+        introduction::initiate(&id, &session_id).await
     } else {
-        introduction::join(id, session_id).await
+        introduction::join(&id, &session_id).await
     }
 }
