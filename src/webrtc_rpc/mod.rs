@@ -14,6 +14,7 @@ pub mod error {
     pub enum Error {
         JsError(JsValue),
         RustError(Box<dyn std::error::Error>),
+        StringError(String),
     }
 
     impl From<JsValue> for Error {
