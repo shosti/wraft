@@ -5,15 +5,28 @@ use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
+use std::collections::HashMap;
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{MessageEvent, WebSocket};
-use yenta_types::{Command, JoinInfo};
+use web_sys::{MessageEvent, RtcPeerConnection, WebSocket};
+use yenta_types::{Command, JoinInfo, SessionInfo};
 
 static INTRODUCER: &str = "ws://localhost:9999";
 
-pub async fn initiate(id: &str, session_id: &str) -> Result<(), Error> {
+#[derive(Clone)]
+struct State {
+    node_id: Arc<String>,
+    peers: Arc<HashMap<String, RtcPeerConnection>>,
+}
+
+pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
+    let state: State = State {
+        node_id: Arc::new(node_id.to_string()),
+        peers: Arc::new(HashMap::new()),
+    };
+
     let (_done, mut wait_done) = oneshot::channel::<()>();
     let (errors_tx, mut errors_rx) = channel::<Error>(10);
     let ws = WebSocket::new(INTRODUCER)?;
@@ -23,8 +36,9 @@ pub async fn initiate(id: &str, session_id: &str) -> Result<(), Error> {
     let onmessage_cb = Closure::wrap(Box::new(move |e: MessageEvent| {
         let ws = onmessage_ws.clone();
         let mut errors = errors_tx.clone();
+        let s = state.clone();
         spawn_local(async move {
-            match handle_message(e, ws).await {
+            match handle_message(e, ws, s.clone()).await {
                 Ok(()) => (),
                 Err(err) => {
                     errors.send(err).await.unwrap();
@@ -49,7 +63,7 @@ pub async fn initiate(id: &str, session_id: &str) -> Result<(), Error> {
     }
 
     let join_info = JoinInfo {
-        node_id: id.to_string(),
+        node_id: node_id.to_string(),
         session_id: session_id.to_string(),
     };
     let cmd = Command::Join(join_info);
@@ -61,13 +75,28 @@ pub async fn initiate(id: &str, session_id: &str) -> Result<(), Error> {
     }
 }
 
-async fn handle_message(e: MessageEvent, _ws: WebSocket) -> Result<(), Error> {
+async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<(), Error> {
     let abuf = e
         .data()
         .dyn_into::<js_sys::ArrayBuffer>()
         .expect("Expected message in binary format");
     let data = js_sys::Uint8Array::new(&abuf).to_vec();
-    let msg: Command = bincode::deserialize(&data)?;
-    console_log!("MSG: {:#?}", msg);
+    let command: Command = bincode::deserialize(&data)?;
+
+    match command {
+        Command::SessionStatus(session) => handle_session_update(session, ws, state).await,
+        _ => {
+            console_log!("COMMAND: {:#?}", command);
+            Ok(())
+        }
+    }
+}
+
+async fn handle_session_update(session: SessionInfo, _ws: WebSocket, state: State) -> Result<(), Error> {
+    for p in session.online {
+        if p > *state.node_id && !state.peers.contains_key(&p) {
+            console_log!("GOING TO CONNECT TO {}", p);
+        }
+    }
     Ok(())
 }
