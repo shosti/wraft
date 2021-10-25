@@ -1,5 +1,6 @@
 use crate::console_log;
 use futures::channel::mpsc::channel;
+use futures::channel::oneshot;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use wasm_bindgen::prelude::*;
@@ -9,16 +10,19 @@ use web_sys::{MessageEvent, WebSocket};
 #[allow(dead_code, unused_imports)]
 #[path = "../../target/flatbuffers/introduction_generated.rs"]
 pub mod flatbuf;
-use flatbuf::wraft::introduction::{Join, JoinArgs, Message, Command, MessageArgs};
+use flatbuf::wraft::introduction::{root_as_message, Command, Join, JoinArgs, Message, MessageArgs};
 
 static INTRODUCER: &str = "ws://localhost:9999";
 
 pub async fn initiate(id: &str, session_id: &str) -> Result<(), JsValue> {
+    let (_done, wait_done) = oneshot::channel::<()>();
     let ws = WebSocket::new(INTRODUCER)?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
+    let onmessage_ws = ws.clone();
     let onmessage_cb = Closure::wrap(Box::new(move |e: MessageEvent| {
-        console_log!("E: {:#?}", e);
+        let ws = onmessage_ws.clone();
+        handle_message(e, ws);
     }) as Box<dyn FnMut(MessageEvent)>);
     ws.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
 
@@ -39,18 +43,35 @@ pub async fn initiate(id: &str, session_id: &str) -> Result<(), JsValue> {
     let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
     let join_id = Some(builder.create_string(id));
     let join_session_id = Some(builder.create_string(session_id));
-    let join = Join::create(&mut builder, &JoinArgs{
-        id: join_id,
-        session_id: join_session_id,
-    });
-    let message = Message::create(&mut builder, &MessageArgs{
-        command_type: Command::Join,
-        command: Some(join.as_union_value()),
-    });
+    let join = Join::create(
+        &mut builder,
+        &JoinArgs {
+            id: join_id,
+            session_id: join_session_id,
+        },
+    );
+    let message = Message::create(
+        &mut builder,
+        &MessageArgs {
+            command_type: Command::Join,
+            command: Some(join.as_union_value()),
+        },
+    );
     builder.finish(message, None);
     let data = &builder.finished_data();
     ws.send_with_u8_array(data)?;
+    wait_done.await.unwrap();
     Ok(())
+}
+
+fn handle_message(e: MessageEvent, _ws: WebSocket) {
+    let abuf = e
+        .data()
+        .dyn_into::<js_sys::ArrayBuffer>()
+        .expect("Expected message in binary format");
+    let data = js_sys::Uint8Array::new(&abuf).to_vec();
+    let msg = root_as_message(&data).unwrap();
+    console_log!("MSG: {:#?}", msg);
 }
 
 pub async fn join(_id: &str, _session_id: &str) -> Result<(), JsValue> {
