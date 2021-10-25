@@ -45,27 +45,10 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            introduce(hn.clone(), get_session_key(), true).await.unwrap();
+            introduce(hn.clone(), get_session_key()).await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
-
-    let join_button_elem = document
-        .get_element_by_id("join-button")
-        .expect("No join button found");
-    let join_button = join_button_elem
-        .dyn_ref::<HtmlButtonElement>()
-        .expect("#join-button should be a button element");
-    let hn_join = hostname.clone();
-    let join = Closure::wrap(Box::new(move |ev: Event| {
-        let hn = hn_join.clone();
-        ev.prevent_default();
-        hide_start_form();
-        spawn_local(async move {
-            introduce(hn.clone(), get_session_key(), false).await.unwrap();
-        });
-    }) as Box<dyn FnMut(Event)>);
-    join_button.set_onclick(Some(join.as_ref().unchecked_ref()));
 
     let forever = future::pending();
     let () = forever.await;

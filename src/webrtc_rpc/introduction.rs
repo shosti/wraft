@@ -59,8 +59,3 @@ fn handle_message(e: MessageEvent, _ws: WebSocket) -> Result<(), Error> {
     console_log!("MSG: {:#?}", msg);
     Ok(())
 }
-
-pub async fn join(_id: &str, _session_id: &str) -> Result<(), Error> {
-    console_log!("JOIN!");
-    Ok(())
-}

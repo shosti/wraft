@@ -3,13 +3,8 @@ mod introduction;
 pub async fn introduce(
     id: String,
     session_id: String,
-    initiate: bool,
 ) -> Result<(), error::Error> {
-    if initiate {
-        introduction::initiate(&id, &session_id).await
-    } else {
-        introduction::join(&id, &session_id).await
-    }
+    introduction::initiate(&id, &session_id).await
 }
 
 pub mod error {
