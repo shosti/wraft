@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{MessageEvent, RtcPeerConnection, WebSocket};
-use yenta_types::{Command, JoinInfo, SessionInfo};
+use yenta_types::{Command, Join, Session};
 
 static INTRODUCER: &str = "ws://localhost:9999";
 
@@ -62,7 +62,7 @@ pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
         None => panic!("Thought this couldn't happen?"),
     }
 
-    let join_info = JoinInfo {
+    let join_info = Join {
         node_id: node_id.to_string(),
         session_id: session_id.to_string(),
     };
@@ -92,7 +92,11 @@ async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<
     }
 }
 
-async fn handle_session_update(session: SessionInfo, _ws: WebSocket, state: State) -> Result<(), Error> {
+async fn handle_session_update(
+    session: Session,
+    _ws: WebSocket,
+    state: State,
+) -> Result<(), Error> {
     for p in session.online {
         if p > *state.node_id && !state.peers.contains_key(&p) {
             console_log!("GOING TO CONNECT TO {}", p);
