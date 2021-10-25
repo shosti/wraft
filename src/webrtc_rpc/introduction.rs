@@ -4,26 +4,28 @@ use futures::channel::mpsc::channel;
 use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
-use futures::stream::StreamExt;
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{MessageEvent, RtcPeerConnection, WebSocket};
-use yenta_types::{Command, Join, Session};
+use yenta_types::{Command, Join, Offer, Session};
 
 static INTRODUCER: &str = "ws://localhost:9999";
 
 #[derive(Clone)]
 struct State {
     node_id: Arc<String>,
+    session_id: Arc<String>,
     peers: Arc<HashMap<String, RtcPeerConnection>>,
 }
 
 pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
     let state: State = State {
         node_id: Arc::new(node_id.to_string()),
+        session_id: Arc::new(session_id.to_string()),
         peers: Arc::new(HashMap::new()),
     };
 
@@ -92,15 +94,36 @@ async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<
     }
 }
 
-async fn handle_session_update(
-    session: Session,
-    _ws: WebSocket,
-    state: State,
-) -> Result<(), Error> {
-    for p in session.online {
-        if p > *state.node_id && !state.peers.contains_key(&p) {
-            console_log!("GOING TO CONNECT TO {}", p);
-        }
+async fn handle_session_update(session: Session, ws: WebSocket, state: State) -> Result<(), Error> {
+    let mut introductions = session
+        .online
+        .iter()
+        .filter(|&p| p > &*state.node_id && !state.peers.contains_key(p))
+        .map(|p| {
+            let peer = p.clone();
+            async { introduce(peer, ws.clone(), state.clone()).await }
+        })
+        .collect::<FuturesUnordered<_>>();
+    while let Some(res) = introductions.next().await {
+        println!("RES: {:#?}", res);
     }
+    Ok(())
+}
+
+async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), Error> {
+    let pc = RtcPeerConnection::new()?;
+    let offer = JsFuture::from(pc.create_offer()).await?;
+    let sdp_data = js_sys::Reflect::get(&offer, &JsValue::from_str("sdp"))?
+        .as_string()
+        .unwrap();
+    let cmd = Command::Offer(Offer {
+        session_id: state.session_id.to_string(),
+        node_id: state.node_id.to_string(),
+        target_id: peer_id,
+        sdp_data,
+    });
+    let data = bincode::serialize(&cmd)?;
+    ws.send_with_u8_array(&data)?;
+
     Ok(())
 }
