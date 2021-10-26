@@ -1,23 +1,26 @@
-use futures::channel::mpsc::{channel, Receiver};
+use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::task::{Context, Poll};
+use futures::{Sink, Stream};
 use futures::{SinkExt, StreamExt};
-use futures::Stream;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::pin::Pin;
-use tarpc::Request;
+use tarpc::{Request, Response};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{MessageEvent, RtcDataChannel, RtcPeerConnection};
+
+static CHANNEL_SIZE: usize = 1_000_000;
 
 #[derive(Debug)]
 pub struct Peer<T> {
     pub node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
-    recv: Receiver<Request<T>>,
+    requests: Receiver<Request<T>>,
+    responses: Sender<Response<T>>,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
 }
 
@@ -35,8 +38,9 @@ where
         connection: RtcPeerConnection,
         data_channel: RtcDataChannel,
     ) -> Self {
-        let (req_tx, req_rx) = channel(1000);
+        data_channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
 
+        let (req_tx, requests) = channel(CHANNEL_SIZE);
         let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
             let tx = req_tx.clone();
             spawn_local(async move {
@@ -53,11 +57,22 @@ where
         }) as Box<dyn FnMut(MessageEvent)>);
         data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
+        let send_dc = data_channel.clone();
+        let (responses, mut resp_rx) = channel::<Response<T>>(CHANNEL_SIZE);
+        spawn_local(async move {
+            while let Some(r) = resp_rx.next().await {
+                let data = bincode::serialize(&r).unwrap();
+                // TODO: error handling
+                send_dc.send_with_u8_array(&data).unwrap();
+            }
+        });
+
         Self {
             node_id,
             connection,
             data_channel,
-            recv: req_rx,
+            requests,
+            responses,
             _message_cb: cb,
         }
     }
@@ -67,11 +82,31 @@ impl<T> Stream for Peer<T> {
     type Item = Request<T>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.recv.poll_next_unpin(cx)
+        self.requests.poll_next_unpin(cx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.recv.size_hint()
+        self.requests.size_hint()
+    }
+}
+
+impl<T> Sink<Response<T>> for Peer<T> {
+    type Error = <Sender<Response<T>> as Sink<Response<T>>>::Error;
+
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.responses.poll_ready_unpin(cx)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: Response<T>) -> Result<(), Self::Error> {
+        self.responses.start_send_unpin(item)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.responses.poll_flush_unpin(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.responses.poll_close_unpin(cx)
     }
 }
 
