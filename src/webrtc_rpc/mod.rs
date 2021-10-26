@@ -1,10 +1,12 @@
+pub mod client;
 mod introduction;
 
-pub async fn introduce(
-    id: String,
-    session_id: String,
-) -> Result<(), error::Error> {
-    introduction::initiate(&id, &session_id).await
+static CLUSTER_SIZE: usize = 3;
+
+pub async fn introduce(id: String, session_id: String) -> Result<(), error::Error> {
+    let client = introduction::initiate(&id, &session_id, CLUSTER_SIZE).await?;
+    println!("CLIENT: {:#?}", client);
+    Ok(())
 }
 
 pub mod error {

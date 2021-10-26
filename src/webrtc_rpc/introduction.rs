@@ -1,8 +1,8 @@
 use crate::console_log;
 use crate::util::sleep;
+use crate::webrtc_rpc::client::{Client, Peer};
 use crate::webrtc_rpc::error::Error;
 use futures::channel::mpsc::channel;
-use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -14,7 +14,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
-    MessageEvent, RtcDataChannelEvent, RtcIceCandidateInit, RtcPeerConnection,
+    MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcIceCandidateInit, RtcPeerConnection,
     RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
 };
 use yenta_types::{Command, IceCandidate, Join, Offer, Session};
@@ -26,25 +26,24 @@ struct State {
     node_id: Arc<String>,
     session_id: Arc<String>,
     peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
-    _callbacks: Arc<Mutex<Callbacks>>
+    _callbacks: Arc<Mutex<Callbacks>>,
 }
 
 #[derive(Default)]
 struct Callbacks {
     ice: Option<Closure<dyn FnMut(RtcPeerConnectionIceEvent)>>,
-    data_channel: Option<Closure<dyn FnMut(RtcDataChannelEvent)>>
+    data_channel: Option<Closure<dyn FnMut(RtcDataChannelEvent)>>,
 }
 
-pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
+pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Client, Error> {
     let state: State = State {
         node_id: Arc::new(node_id.to_string()),
         session_id: Arc::new(session_id.to_string()),
         peers: Arc::new(RwLock::new(HashMap::new())),
         _callbacks: Arc::new(Mutex::new(Callbacks::default())),
     };
-
-    let (_done, mut wait_done) = oneshot::channel::<()>();
     let (errors_tx, mut errors_rx) = channel::<Error>(10);
+    let (_peer_tx, mut peer_rx) = channel::<(String, RtcPeerConnection, RtcDataChannel)>(10);
     let ws = WebSocket::new(INTRODUCER)?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
@@ -83,10 +82,19 @@ pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
         session_id: session_id.to_string(),
     });
     send_command(ws, &cmd)?;
-    select! {
-        _ = wait_done => Ok(()),
-        err = errors_rx.next() => Err(err.unwrap()),
+
+    let mut peers = HashMap::new();
+    while peers.len() < (size - 1) {
+        select! {
+            p = peer_rx.next() => {
+                let (id, conn, ch) = p.unwrap();
+                let peer = Peer::new(conn, ch);
+                peers.insert(id, peer);
+            }
+            err = errors_rx.next() => return Err(err.unwrap()),
+        }
     }
+    Ok(Client::new(peers))
 }
 
 async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<(), Error> {
@@ -176,20 +184,18 @@ fn new_peer_connection(
     let pc = RtcPeerConnection::new()?;
     let session_id = state.session_id.to_string();
     let node_id = state.node_id.to_string();
-    let ice_cb = Closure::wrap(
-        Box::new(move |ev: RtcPeerConnectionIceEvent| {
-            if let Some(candidate) = ev.candidate() {
-                let cmd = Command::IceCandidate(IceCandidate {
-                    session_id: session_id.clone(),
-                    node_id: node_id.clone(),
-                    target_id: peer_id.to_string(),
-                    candidate: candidate.candidate(),
-                    sdp_mid: candidate.sdp_mid(),
-                });
-                send_command(ws.clone(), &cmd).unwrap();
-            }
-        }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
-    );
+    let ice_cb = Closure::wrap(Box::new(move |ev: RtcPeerConnectionIceEvent| {
+        if let Some(candidate) = ev.candidate() {
+            let cmd = Command::IceCandidate(IceCandidate {
+                session_id: session_id.clone(),
+                node_id: node_id.clone(),
+                target_id: peer_id.to_string(),
+                candidate: candidate.candidate(),
+                sdp_mid: candidate.sdp_mid(),
+            });
+            send_command(ws.clone(), &cmd).unwrap();
+        }
+    }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>);
     pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
     {
         let mut cbs = state._callbacks.lock().unwrap();
@@ -248,9 +254,9 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
 
 async fn handle_answer(answer: Offer, state: State) -> Result<(), Error> {
     let peers = state.peers.read().unwrap();
-    let pc = peers.get(&answer.node_id).ok_or_else(|| {
-        Error::String(format!("No connection found for {}", &answer.node_id))
-    })?;
+    let pc = peers
+        .get(&answer.node_id)
+        .ok_or_else(|| Error::String(format!("No connection found for {}", &answer.node_id)))?;
     let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
     desc.sdp(&answer.sdp_data);
     JsFuture::from(pc.set_remote_description(&desc)).await?;
