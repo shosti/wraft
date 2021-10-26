@@ -1,33 +1,17 @@
 pub mod util;
 mod webrtc_rpc;
+pub mod raft;
 
 use futures::prelude::*;
-use serde::{Deserialize, Serialize};
+use raft::Raft;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Event, HtmlButtonElement, HtmlElement, HtmlInputElement, Window};
-use webrtc_rpc::introduce;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-enum RpcMessage {}
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-// struct Raft {
-//     elem: Element,
-// }
-
-// impl Raft {
-//     pub async fn run(&mut self) {
-//         console::log_1(&"YO!".into());
-//         self.elem.set_inner_html("<h1>YOOOOO</h1>");
-//         utils::sleep(Duration::from_secs(3)).await.unwrap();
-//         self.elem.set_inner_html("<h1>HAHAHA</h1>");
-//     }
-// }
 
 #[wasm_bindgen(start)]
 pub async fn start() {
@@ -47,12 +31,8 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            introduce::<tarpc::Request<RpcMessage>, tarpc::Response<RpcMessage>>(
-                hn.clone(),
-                get_session_key(),
-            )
-            .await
-            .unwrap();
+            let mut raft = Raft::new(hn.clone(), get_session_key());
+            raft.run().await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));

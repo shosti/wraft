@@ -21,6 +21,7 @@ yenta_types = { git = "ssh://gitea.eevans.me/shosti/yenta_types.git" }
 tarpc = { version = "0.27", features = ["serde1"] }
 getrandom = { version = "0.2", features = ["js"] }
 wee_alloc = "0.4"
+anyhow = "1.0"
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
