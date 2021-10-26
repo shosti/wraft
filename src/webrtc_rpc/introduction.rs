@@ -18,6 +18,7 @@ use web_sys::{
 use yenta_types::{Command, IceCandidate, Join, Offer, Session};
 
 static INTRODUCER: &str = "ws://localhost:9999";
+static ACK: &str = "ACK";
 
 #[derive(Clone)]
 struct State {
@@ -93,6 +94,7 @@ pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Cl
             err = errors_rx.next() => return Err(err.unwrap()),
         }
     }
+    console_log!("WE DID IT!!!");
     Ok(Client::new(peers))
 }
 
@@ -137,13 +139,20 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
     let dc = pc.create_data_channel(
         format!("data-{}-{}-{}", state.session_id, state.node_id, peer_id).as_str(),
     );
-    let data_cb = Closure::wrap(Box::new(move |_ev: MessageEvent| {
-        // When we get a message from the peer, we know the data channel is
-        // ready!
-        let mut tx = done_tx.clone();
-        spawn_local(async move {
-            tx.send(()).await.unwrap();
-        });
+    let data_cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
+        match ev.data().as_string() {
+            Some(msg) if msg == ACK => {
+                // When we get a message from the peer, we know the data channel is
+                // ready!
+                let mut tx = done_tx.clone();
+                spawn_local(async move {
+                    tx.send(()).await.unwrap();
+                });
+            }
+            msg => {
+                panic!("Unexpected message on data stream: {:?}", msg)
+            }
+        }
     }) as Box<dyn FnMut(MessageEvent)>);
     dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
 
@@ -178,7 +187,7 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
             let peer = Peer::new(peer_id, pc, dc);
             tx.send(peer).await?;
             Ok(())
-        },
+        }
         state => {
             let msg = format!(
                 "Data channel for {} should be open but is {:?}",
@@ -225,16 +234,31 @@ fn send_command(ws: WebSocket, command: &Command) -> Result<(), Error> {
 }
 
 async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), Error> {
-    let pc = new_peer_connection(offer.node_id.clone(), ws.clone(), state.clone())?;
+    let peer_id = offer.node_id;
+    let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
     {
         let mut peers = state.peers.write().unwrap();
-        peers.insert(offer.node_id.clone(), pc.clone());
+        peers.insert(peer_id.clone(), pc.clone());
     }
 
-    let data_cb = Closure::wrap(Box::new(|ev: RtcDataChannelEvent| {
+    let pc1 = pc.clone();
+    let s1 = state.clone();
+    let pid1 = peer_id.clone();
+    let data_cb = Closure::wrap(Box::new(move |ev: RtcDataChannelEvent| {
+        let pc2 = pc1.clone();
+        let s2 = s1.clone();
+        let pid2 = pid1.clone();
+
         let dc = ev.channel();
-        console_log!("OFEREE DC.READY_STATE: {:#?}", dc.ready_state());
-        dc.send_with_str("YO YO YO!").unwrap();
+        dc.send_with_str(ACK).unwrap();
+        let dc_state = dc.ready_state();
+        assert_eq!(dc_state, RtcDataChannelState::Open);
+        pc2.set_ondatachannel(None);
+        spawn_local(async move {
+            let mut tx = s2.clone().peer_tx.clone();
+            let peer = Peer::new(pid2.clone(), pc2.clone(), dc);
+            tx.send(peer).await.unwrap();
+        });
     }) as Box<dyn FnMut(RtcDataChannelEvent)>);
     pc.set_ondatachannel(Some(data_cb.as_ref().unchecked_ref()));
     {
@@ -256,7 +280,7 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
     let cmd = Command::Answer(Offer {
         session_id: state.session_id.to_string(),
         node_id: state.node_id.to_string(),
-        target_id: offer.node_id,
+        target_id: peer_id.clone(),
         sdp_data: answer_sdp,
     });
     let data = bincode::serialize(&cmd)?;
