@@ -3,6 +3,7 @@ use web_sys::{RtcDataChannel, RtcPeerConnection};
 
 #[derive(Debug)]
 pub struct Peer {
+    pub node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
 }
@@ -13,8 +14,13 @@ pub struct Client {
 }
 
 impl Peer {
-    pub fn new(connection: RtcPeerConnection, data_channel: RtcDataChannel) -> Self {
+    pub fn new(
+        node_id: String,
+        connection: RtcPeerConnection,
+        data_channel: RtcDataChannel,
+    ) -> Self {
         Self {
+            node_id,
             connection,
             data_channel,
         }

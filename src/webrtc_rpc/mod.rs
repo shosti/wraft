@@ -31,8 +31,8 @@ pub mod error {
         }
     }
 
-    impl From<futures::channel::oneshot::Canceled> for Error {
-        fn from(err: futures::channel::oneshot::Canceled) -> Self {
+    impl From<futures::channel::mpsc::SendError> for Error {
+        fn from(err: futures::channel::mpsc::SendError) -> Self {
             Error::Rust(Box::new(err))
         }
     }
