@@ -7,7 +7,7 @@ use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use js_sys::Reflect;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
@@ -26,13 +26,6 @@ struct State {
     session_id: Arc<String>,
     peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
     peer_tx: Sender<Peer>,
-    _callbacks: Arc<Mutex<Callbacks>>,
-}
-
-#[derive(Default)]
-struct Callbacks {
-    ice: Option<Closure<dyn FnMut(RtcPeerConnectionIceEvent)>>,
-    data_channel: Option<Closure<dyn FnMut(RtcDataChannelEvent)>>,
 }
 
 pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Client, Error> {
@@ -42,7 +35,6 @@ pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Cl
         session_id: Arc::new(session_id.to_string()),
         peers: Arc::new(RwLock::new(HashMap::new())),
         peer_tx,
-        _callbacks: Arc::new(Mutex::new(Callbacks::default())),
     };
     let (errors_tx, mut errors_rx) = channel::<Error>(10);
     let ws = WebSocket::new(INTRODUCER)?;
@@ -89,6 +81,7 @@ pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Cl
         select! {
             p = peer_rx.next() => {
                 let peer = p.unwrap();
+                console_log!("GOT PEER: {}", peer.node_id);
                 peers.insert(peer.node_id.clone(), peer);
             }
             err = errors_rx.next() => return Err(err.unwrap()),
@@ -155,6 +148,7 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
+    data_cb.forget();
 
     let offer = JsFuture::from(pc.create_offer()).await?;
     let sdp_data = Reflect::get(&offer, &JsValue::from_str("sdp"))?
@@ -180,22 +174,13 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
     if !done_rx.next().await.is_some() {
         unreachable!()
     }
-    match dc.ready_state() {
-        RtcDataChannelState::Open => {
-            let mut tx = state.peer_tx.clone();
-            dc.set_onmessage(None);
-            let peer = Peer::new(peer_id, pc, dc);
-            tx.send(peer).await?;
-            Ok(())
-        }
-        state => {
-            let msg = format!(
-                "Data channel for {} should be open but is {:?}",
-                peer_id, state
-            );
-            Err(Error::String(msg))
-        }
-    }
+    assert_eq!(dc.ready_state(), RtcDataChannelState::Open);
+    let mut tx = state.peer_tx.clone();
+    dc.set_onmessage(None);
+    pc.set_onicecandidate(None);
+    let peer = Peer::new(peer_id, pc, dc);
+    tx.send(peer).await?;
+    Ok(())
 }
 
 fn new_peer_connection(
@@ -219,10 +204,7 @@ fn new_peer_connection(
         }
     }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>);
     pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
-    {
-        let mut cbs = state._callbacks.lock().unwrap();
-        cbs.ice = Some(ice_cb);
-    }
+    ice_cb.forget();
 
     Ok(pc)
 }
@@ -256,15 +238,15 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
         pc2.set_ondatachannel(None);
         spawn_local(async move {
             let mut tx = s2.clone().peer_tx.clone();
-            let peer = Peer::new(pid2.clone(), pc2.clone(), dc);
+            let pc = pc2.clone();
+            pc.set_onicecandidate(None);
+            dc.set_onmessage(None);
+            let peer = Peer::new(pid2.clone(), pc, dc);
             tx.send(peer).await.unwrap();
         });
     }) as Box<dyn FnMut(RtcDataChannelEvent)>);
     pc.set_ondatachannel(Some(data_cb.as_ref().unchecked_ref()));
-    {
-        let mut cbs = state._callbacks.lock().unwrap();
-        cbs.data_channel = Some(data_cb);
-    }
+    data_cb.forget();
 
     let mut offer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
     offer_desc.sdp(&offer.sdp_data);
