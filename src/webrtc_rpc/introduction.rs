@@ -1,4 +1,5 @@
 use crate::console_log;
+use crate::util::sleep;
 use crate::webrtc_rpc::error::Error;
 use futures::channel::mpsc::channel;
 use futures::channel::oneshot;
@@ -8,11 +9,15 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use js_sys::Reflect;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
-use web_sys::{MessageEvent, RtcPeerConnection, RtcSdpType, RtcSessionDescriptionInit, WebSocket};
-use yenta_types::{Command, Join, Offer, Session};
+use web_sys::{
+    MessageEvent, RtcDataChannelEvent, RtcIceCandidateInit, RtcPeerConnection,
+    RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
+};
+use yenta_types::{Command, IceCandidate, Join, Offer, Session};
 
 static INTRODUCER: &str = "ws://localhost:9999";
 
@@ -70,8 +75,7 @@ pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
         session_id: session_id.to_string(),
     };
     let cmd = Command::Join(join_info);
-    let data = bincode::serialize(&cmd)?;
-    ws.send_with_u8_array(&data)?;
+    send_command(ws, &cmd)?;
     select! {
         _ = wait_done => Ok(()),
         err = errors_rx.next() => Err(err.unwrap()),
@@ -90,10 +94,8 @@ async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<
         Command::SessionStatus(session) => handle_session_update(session, ws, state).await,
         Command::Offer(offer) => handle_offer(offer, ws, state).await,
         Command::Answer(answer) => handle_answer(answer, state).await,
-        _ => {
-            console_log!("COMMAND: {:#?}", command);
-            Ok(())
-        }
+        Command::IceCandidate(candidate) => handle_ice_candidate(candidate, state).await,
+        _ => unreachable!(),
     }
 }
 
@@ -110,13 +112,22 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
             async { introduce(peer, ws.clone(), state.clone()).await }
         })
         .collect::<FuturesUnordered<_>>();
-    while let Some(_) = introductions.next().await {
-    }
+    while let Some(_) = introductions.next().await {}
     Ok(())
 }
 
 async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), Error> {
-    let pc = RtcPeerConnection::new()?;
+    let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
+
+    let dc = pc.create_data_channel(
+        format!("data-{}-{}-{}", state.session_id, state.node_id, peer_id).as_str(),
+    );
+    let data_cb = Closure::wrap(Box::new(|ev: MessageEvent| {
+        console_log!("INTRODUCER DATA MESSAGE: {:#?}", ev.data().as_string());
+    }) as Box<dyn FnMut(MessageEvent)>);
+    dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
+    data_cb.forget();
+
     let offer = JsFuture::from(pc.create_offer()).await?;
     let sdp_data = Reflect::get(&offer, &JsValue::from_str("sdp"))?
         .as_string()
@@ -136,15 +147,62 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
         target_id: peer_id,
         sdp_data,
     });
-    let data = bincode::serialize(&cmd)?;
-    ws.send_with_u8_array(&data)?;
+    send_command(ws, &cmd)?;
+
+    sleep(Duration::from_secs(3)).await?;
+    dc.send_with_str("YO YO YO!")?;
 
     Ok(())
 }
 
-async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), Error> {
-    console_log!("GOT OFFER FROM {}", offer.node_id);
+fn new_peer_connection(
+    peer_id: String,
+    ws: WebSocket,
+    state: State,
+) -> Result<RtcPeerConnection, Error> {
     let pc = RtcPeerConnection::new()?;
+    let ice_cb = Closure::wrap(
+        Box::new(move |ev: RtcPeerConnectionIceEvent| match ev.candidate() {
+            Some(candidate) => {
+                let cmd = Command::IceCandidate(IceCandidate {
+                    session_id: state.session_id.to_string(),
+                    node_id: state.node_id.to_string(),
+                    target_id: peer_id.to_string(),
+                    candidate: candidate.candidate(),
+                    sdp_mid: candidate.sdp_mid(),
+                });
+                send_command(ws.clone(), &cmd).unwrap();
+            }
+            None => {}
+        }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
+    );
+    pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
+    // This leaks memory but it shouldn't be a big deal.
+    ice_cb.forget();
+
+    Ok(pc)
+}
+
+fn send_command(ws: WebSocket, command: &Command) -> Result<(), Error> {
+    let data = bincode::serialize(command)?;
+    ws.send_with_u8_array(&data)?;
+    Ok(())
+}
+
+async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), Error> {
+    let pc = new_peer_connection(offer.node_id.clone(), ws.clone(), state.clone())?;
+    {
+        let mut peers = state.peers.write().unwrap();
+        peers.insert(offer.node_id.clone(), pc.clone());
+    }
+
+    let data_cb = Closure::wrap(Box::new(|ev: RtcDataChannelEvent| {
+        let dc = ev.channel();
+        dc.send_with_str("YO YO YO!").unwrap();
+    }) as Box<dyn FnMut(RtcDataChannelEvent)>);
+    pc.set_ondatachannel(Some(data_cb.as_ref().unchecked_ref()));
+    data_cb.forget();
+
     let mut offer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
     offer_desc.sdp(&offer.sdp_data);
     JsFuture::from(pc.set_remote_description(&offer_desc)).await?;
@@ -169,14 +227,32 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
 }
 
 async fn handle_answer(answer: Offer, state: State) -> Result<(), Error> {
-    console_log!("GOT ANSWER FROM {}", answer.node_id);
     let peers = state.peers.read().unwrap();
-    let pc = peers
-        .get(&answer.node_id)
-        .ok_or_else(|| Error::StringError(format!("No connection found for {}", answer.node_id)))?;
+    let pc = peers.get(&answer.node_id).ok_or_else(|| {
+        Error::StringError(format!("No connection found for {}", &answer.node_id))
+    })?;
     let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
     desc.sdp(&answer.sdp_data);
     JsFuture::from(pc.set_remote_description(&desc)).await?;
 
+    Ok(())
+}
+
+async fn handle_ice_candidate(candidate: IceCandidate, state: State) -> Result<(), Error> {
+    let add_ice_promise;
+    {
+        let peers = state.peers.read().unwrap();
+        let pc = peers.get(&candidate.node_id).ok_or_else(|| {
+            Error::StringError(format!("No connection found for {}", candidate.node_id))
+        })?;
+        let mut cand = RtcIceCandidateInit::new(&candidate.candidate);
+        if let Some(sdp_mid) = candidate.sdp_mid {
+            cand.sdp_mid(Some(&sdp_mid));
+        } else {
+            cand.sdp_mid(None);
+        }
+        add_ice_promise = pc.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&cand));
+    }
+    JsFuture::from(add_ice_promise).await?;
     Ok(())
 }

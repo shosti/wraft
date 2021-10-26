@@ -49,6 +49,7 @@ features = [
   "RtcSessionDescriptionInit",
   "RtcPeerConnectionIceEvent",
   "RtcIceCandidate",
+  "RtcIceCandidateInit",
   "RtcDataChannel",
   "RtcDataChannelEvent",
   "WebSocket",
