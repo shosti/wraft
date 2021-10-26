@@ -112,7 +112,7 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
             async { introduce(peer, ws.clone(), state.clone()).await }
         })
         .collect::<FuturesUnordered<_>>();
-    while let Some(_) = introductions.next().await {}
+    while introductions.next().await.is_some() {}
     Ok(())
 }
 
@@ -162,8 +162,8 @@ fn new_peer_connection(
 ) -> Result<RtcPeerConnection, Error> {
     let pc = RtcPeerConnection::new()?;
     let ice_cb = Closure::wrap(
-        Box::new(move |ev: RtcPeerConnectionIceEvent| match ev.candidate() {
-            Some(candidate) => {
+        Box::new(move |ev: RtcPeerConnectionIceEvent| {
+            if let Some(candidate) = ev.candidate() {
                 let cmd = Command::IceCandidate(IceCandidate {
                     session_id: state.session_id.to_string(),
                     node_id: state.node_id.to_string(),
@@ -173,7 +173,6 @@ fn new_peer_connection(
                 });
                 send_command(ws.clone(), &cmd).unwrap();
             }
-            None => {}
         }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
     );
     pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
@@ -229,7 +228,7 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
 async fn handle_answer(answer: Offer, state: State) -> Result<(), Error> {
     let peers = state.peers.read().unwrap();
     let pc = peers.get(&answer.node_id).ok_or_else(|| {
-        Error::StringError(format!("No connection found for {}", &answer.node_id))
+        Error::String(format!("No connection found for {}", &answer.node_id))
     })?;
     let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
     desc.sdp(&answer.sdp_data);
@@ -243,7 +242,7 @@ async fn handle_ice_candidate(candidate: IceCandidate, state: State) -> Result<(
     {
         let peers = state.peers.read().unwrap();
         let pc = peers.get(&candidate.node_id).ok_or_else(|| {
-            Error::StringError(format!("No connection found for {}", candidate.node_id))
+            Error::String(format!("No connection found for {}", candidate.node_id))
         })?;
         let mut cand = RtcIceCandidateInit::new(&candidate.candidate);
         if let Some(sdp_mid) = candidate.sdp_mid {

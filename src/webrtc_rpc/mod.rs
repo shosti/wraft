@@ -12,26 +12,26 @@ pub mod error {
 
     #[derive(Debug)]
     pub enum Error {
-        JsError(JsValue),
-        RustError(Box<dyn std::error::Error>),
-        StringError(String),
+        Js(JsValue),
+        Rust(Box<dyn std::error::Error>),
+        String(String),
     }
 
     impl From<JsValue> for Error {
         fn from(js_val: JsValue) -> Self {
-            Error::JsError(js_val)
+            Error::Js(js_val)
         }
     }
 
     impl From<Box<bincode::ErrorKind>> for Error {
         fn from(err: Box<bincode::ErrorKind>) -> Self {
-            Error::RustError(err)
+            Error::Rust(err)
         }
     }
 
     impl From<futures::channel::oneshot::Canceled> for Error {
         fn from(err: futures::channel::oneshot::Canceled) -> Self {
-            Error::RustError(Box::new(err))
+            Error::Rust(Box::new(err))
         }
     }
 }
