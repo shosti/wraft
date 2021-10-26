@@ -8,7 +8,7 @@ use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use js_sys::Reflect;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -26,6 +26,13 @@ struct State {
     node_id: Arc<String>,
     session_id: Arc<String>,
     peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
+    _callbacks: Arc<Mutex<Callbacks>>
+}
+
+#[derive(Default)]
+struct Callbacks {
+    ice: Option<Closure<dyn FnMut(RtcPeerConnectionIceEvent)>>,
+    data_channel: Option<Closure<dyn FnMut(RtcDataChannelEvent)>>
 }
 
 pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
@@ -33,6 +40,7 @@ pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
         node_id: Arc::new(node_id.to_string()),
         session_id: Arc::new(session_id.to_string()),
         peers: Arc::new(RwLock::new(HashMap::new())),
+        _callbacks: Arc::new(Mutex::new(Callbacks::default())),
     };
 
     let (_done, mut wait_done) = oneshot::channel::<()>();
@@ -70,11 +78,10 @@ pub async fn initiate(node_id: &str, session_id: &str) -> Result<(), Error> {
         None => panic!("Thought this couldn't happen?"),
     }
 
-    let join_info = Join {
+    let cmd = Command::Join(Join {
         node_id: node_id.to_string(),
         session_id: session_id.to_string(),
-    };
-    let cmd = Command::Join(join_info);
+    });
     send_command(ws, &cmd)?;
     select! {
         _ = wait_done => Ok(()),
@@ -122,11 +129,14 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
     let dc = pc.create_data_channel(
         format!("data-{}-{}-{}", state.session_id, state.node_id, peer_id).as_str(),
     );
+    // TODO: TEMP
     let data_cb = Closure::wrap(Box::new(|ev: MessageEvent| {
         console_log!("INTRODUCER DATA MESSAGE: {:#?}", ev.data().as_string());
     }) as Box<dyn FnMut(MessageEvent)>);
     dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
     data_cb.forget();
+    // ENDTODO
+    console_log!("DC.READY_STATE(): {:#?}", dc.ready_state());
 
     let offer = JsFuture::from(pc.create_offer()).await?;
     let sdp_data = Reflect::get(&offer, &JsValue::from_str("sdp"))?
@@ -149,8 +159,11 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
     });
     send_command(ws, &cmd)?;
 
+    console_log!("A");
     sleep(Duration::from_secs(3)).await?;
-    dc.send_with_str("YO YO YO!")?;
+    console_log!("B");
+    dc.send_with_str("FROM INTRODUCER")?;
+    console_log!("DC.READY_STATE NOW NOW NOW(): {:#?}", dc.ready_state());
 
     Ok(())
 }
@@ -161,12 +174,14 @@ fn new_peer_connection(
     state: State,
 ) -> Result<RtcPeerConnection, Error> {
     let pc = RtcPeerConnection::new()?;
+    let session_id = state.session_id.to_string();
+    let node_id = state.node_id.to_string();
     let ice_cb = Closure::wrap(
         Box::new(move |ev: RtcPeerConnectionIceEvent| {
             if let Some(candidate) = ev.candidate() {
                 let cmd = Command::IceCandidate(IceCandidate {
-                    session_id: state.session_id.to_string(),
-                    node_id: state.node_id.to_string(),
+                    session_id: session_id.clone(),
+                    node_id: node_id.clone(),
                     target_id: peer_id.to_string(),
                     candidate: candidate.candidate(),
                     sdp_mid: candidate.sdp_mid(),
@@ -176,8 +191,10 @@ fn new_peer_connection(
         }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
     );
     pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
-    // This leaks memory but it shouldn't be a big deal.
-    ice_cb.forget();
+    {
+        let mut cbs = state._callbacks.lock().unwrap();
+        cbs.ice = Some(ice_cb);
+    }
 
     Ok(pc)
 }
@@ -197,10 +214,14 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
 
     let data_cb = Closure::wrap(Box::new(|ev: RtcDataChannelEvent| {
         let dc = ev.channel();
+        console_log!("OFEREE DC.READY_STATE: {:#?}", dc.ready_state());
         dc.send_with_str("YO YO YO!").unwrap();
     }) as Box<dyn FnMut(RtcDataChannelEvent)>);
     pc.set_ondatachannel(Some(data_cb.as_ref().unchecked_ref()));
-    data_cb.forget();
+    {
+        let mut cbs = state._callbacks.lock().unwrap();
+        cbs.data_channel = Some(data_cb);
+    }
 
     let mut offer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
     offer_desc.sdp(&offer.sdp_data);

@@ -52,6 +52,7 @@ features = [
   "RtcIceCandidateInit",
   "RtcDataChannel",
   "RtcDataChannelEvent",
+  "RtcDataChannelState",
   "WebSocket",
   "Window",
 ]
