@@ -62,7 +62,7 @@ impl State {
 
 pub async fn initiate<T>(node_id: &str, session_id: &str, size: usize) -> Result<Client<T>, Error>
 where
-    T: Clone + Serialize + DeserializeOwned + 'static,
+    T: Serialize + DeserializeOwned + 'static,
 {
     let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
     let state = State::new(node_id, session_id, peer_tx);

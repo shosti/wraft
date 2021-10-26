@@ -8,7 +8,7 @@ static CLUSTER_SIZE: usize = 3;
 
 pub async fn introduce<T>(id: String, session_id: String) -> Result<(), error::Error>
 where
-    T: Debug + Clone + Serialize + DeserializeOwned + 'static,
+    T: Debug + Serialize + DeserializeOwned + 'static,
 {
     let client = introduction::initiate::<T>(&id, &session_id, CLUSTER_SIZE).await?;
     println!("CLIENT: {:#?}", client);
