@@ -457,6 +457,7 @@ dependencies = [
  "opentelemetry",
  "pin-project",
  "rand",
+ "serde",
  "static_assertions",
  "tarpc-plugins",
  "thiserror",

@@ -1,15 +1,16 @@
 pub mod client;
 mod introduction;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fmt::Debug;
 
 static CLUSTER_SIZE: usize = 3;
 
-pub async fn introduce<Req, Resp>(id: String, session_id: String) -> Result<(), error::Error>
+pub async fn introduce<T>(id: String, session_id: String) -> Result<(), error::Error>
 where
-    Req: Debug + Clone,
-    Resp: Debug + Clone,
+    T: Debug + Clone + Serialize + DeserializeOwned + 'static,
 {
-    let client = introduction::initiate::<Req, Resp>(&id, &session_id, CLUSTER_SIZE).await?;
+    let client = introduction::initiate::<T>(&id, &session_id, CLUSTER_SIZE).await?;
     println!("CLIENT: {:#?}", client);
     Ok(())
 }

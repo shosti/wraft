@@ -2,17 +2,15 @@ pub mod util;
 mod webrtc_rpc;
 
 use futures::prelude::*;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Event, HtmlButtonElement, HtmlElement, HtmlInputElement, Window};
 use webrtc_rpc::introduce;
-use wasm_bindgen_futures::spawn_local;
 
-#[derive(Clone, Debug)]
-enum RpcRequest {}
-
-#[derive(Clone, Debug)]
-enum RpcResponse {}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+enum RpcMessage {}
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
@@ -49,7 +47,9 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            introduce::<RpcRequest, RpcResponse>(hn.clone(), get_session_key()).await.unwrap();
+            introduce::<RpcMessage>(hn.clone(), get_session_key())
+                .await
+                .unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
