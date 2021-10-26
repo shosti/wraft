@@ -6,7 +6,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
 use tarpc::Request;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -19,7 +18,7 @@ pub struct Peer<T> {
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
     recv: Receiver<Request<T>>,
-    _message_cb: Arc<Closure<dyn FnMut(MessageEvent)>>,
+    _message_cb: Closure<dyn FnMut(MessageEvent)>,
 }
 
 #[derive(Debug)]
@@ -38,7 +37,7 @@ where
     ) -> Self {
         let (req_tx, req_rx) = channel(1000);
 
-        let cb = Arc::new(Closure::wrap(Box::new(move |ev: MessageEvent| {
+        let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
             let tx = req_tx.clone();
             spawn_local(async move {
                 let mut req_tx = tx.clone();
@@ -51,8 +50,8 @@ where
                 let req = bincode::deserialize::<Request<T>>(&data).unwrap();
                 req_tx.send(req).await.unwrap();
             });
-        }) as Box<dyn FnMut(MessageEvent)>));
-        data_channel.set_onmessage(Some(cb.as_ref().as_ref().unchecked_ref()));
+        }) as Box<dyn FnMut(MessageEvent)>);
+        data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
         Self {
             node_id,
