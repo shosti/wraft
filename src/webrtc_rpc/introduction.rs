@@ -1,7 +1,7 @@
 use crate::console_log;
 use crate::webrtc_rpc::client::{Client, Peer};
 use crate::webrtc_rpc::error::Error;
-use futures::channel::mpsc::{channel, Sender};
+use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -12,8 +12,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
-    MessageEvent, RtcDataChannelEvent, RtcDataChannelState, RtcIceCandidateInit, RtcPeerConnection,
-    RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
+    MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState, RtcIceCandidateInit,
+    RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
 };
 use yenta_types::{Command, IceCandidate, Join, Offer, Session};
 
@@ -28,53 +28,37 @@ struct State {
     peer_tx: Sender<Peer>,
 }
 
-pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Client, Error> {
-    let (peer_tx, mut peer_rx) = channel::<Peer>(10);
-    let state: State = State {
-        node_id: Arc::new(node_id.to_string()),
-        session_id: Arc::new(session_id.to_string()),
-        peers: Arc::new(RwLock::new(HashMap::new())),
-        peer_tx,
-    };
-    let (errors_tx, mut errors_rx) = channel::<Error>(10);
-    let ws = WebSocket::new(INTRODUCER)?;
-    ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
-
-    let onmessage_ws = ws.clone();
-    let onmessage_cb = Closure::wrap(Box::new(move |e: MessageEvent| {
-        let ws = onmessage_ws.clone();
-        let mut errors = errors_tx.clone();
-        let s = state.clone();
-        spawn_local(async move {
-            match handle_message(e, ws, s.clone()).await {
-                Ok(()) => (),
-                Err(err) => {
-                    errors.send(err).await.unwrap();
-                }
-            }
-        });
-    }) as Box<dyn FnMut(MessageEvent)>);
-    ws.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
-
-    let (opened_tx, mut opened_rx) = channel::<()>(1);
-    let onopen_cb = Closure::wrap(Box::new(move || {
-        let mut tx = opened_tx.clone();
-        spawn_local(async move {
-            tx.send(()).await.unwrap();
-        });
-    }) as Box<dyn FnMut()>);
-    ws.set_onopen(Some(onopen_cb.as_ref().unchecked_ref()));
-
-    match opened_rx.next().await {
-        Some(()) => (),
-        None => panic!("Thought this couldn't happen?"),
+impl State {
+    pub fn new(node_id: &str, session_id: &str, peer_tx: Sender<Peer>) -> Self {
+        Self {
+            node_id: Arc::new(node_id.to_string()),
+            session_id: Arc::new(session_id.to_string()),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            peer_tx,
+        }
     }
 
-    let cmd = Command::Join(Join {
-        node_id: node_id.to_string(),
-        session_id: session_id.to_string(),
-    });
-    send_command(ws, &cmd)?;
+    pub fn insert_peer(&self, peer_id: &str, pc: RtcPeerConnection) {
+        let mut peers = self.peers.write().unwrap();
+        peers.insert(peer_id.to_string(), pc);
+    }
+
+    pub async fn send_peer(&self, peer_id: &str, pc: RtcPeerConnection, dc: RtcDataChannel) -> Result<(), Error> {
+        let mut tx = self.peer_tx.clone();
+        let peer = Peer::new(peer_id.to_string(), pc, dc);
+        tx.send(peer).await?;
+
+        Ok(())
+    }
+}
+
+pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Client, Error> {
+    let (peer_tx, mut peer_rx) = channel::<Peer>(10);
+    let state = State::new(node_id, session_id, peer_tx);
+
+    let (ws, mut errors_rx) = init_ws(state).await?;
+    wait_for_ws_opened(ws.clone()).await;
+    send_join_command(node_id, session_id, ws).await?;
 
     let mut peers = HashMap::new();
     while peers.len() < (size - 1) {
@@ -126,60 +110,28 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
 }
 
 async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), Error> {
-    let (done_tx, mut done_rx) = channel::<()>(1);
     let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
+    state.insert_peer(&peer_id, pc.clone());
 
     let dc = pc.create_data_channel(
         format!("data-{}-{}-{}", state.session_id, state.node_id, peer_id).as_str(),
     );
-    let data_cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
-        match ev.data().as_string() {
-            Some(msg) if msg == ACK => {
-                // When we get a message from the peer, we know the data channel is
-                // ready!
-                let mut tx = done_tx.clone();
-                spawn_local(async move {
-                    tx.send(()).await.unwrap();
-                });
-            }
-            msg => {
-                panic!("Unexpected message on data stream: {:?}", msg)
-            }
-        }
-    }) as Box<dyn FnMut(MessageEvent)>);
-    dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
-    data_cb.forget();
 
-    let offer = JsFuture::from(pc.create_offer()).await?;
-    let sdp_data = Reflect::get(&offer, &JsValue::from_str("sdp"))?
-        .as_string()
-        .unwrap();
-    let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
-    desc.sdp(&sdp_data);
-    JsFuture::from(pc.set_local_description(&desc)).await?;
-
-    {
-        let mut peers = state.peers.write().unwrap();
-        peers.insert(peer_id.clone(), pc.clone());
-    }
-
-    let cmd = Command::Offer(Offer {
-        session_id: state.session_id.to_string(),
-        node_id: state.node_id.to_string(),
-        target_id: peer_id.to_string(),
-        sdp_data,
+    let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
+    let dc_clone = dc.clone();
+    spawn_local(async move {
+        wait_for_dc_initiated(dc_clone).await;
+        done_tx.send(()).unwrap();
     });
-    send_command(ws, &cmd)?;
 
-    if !done_rx.next().await.is_some() {
-        unreachable!()
-    }
+    let sdp_data = local_description(&pc).await?;
+    send_offer(&peer_id, &sdp_data, ws, state.clone()).await?;
+
+    done_rx.await.unwrap();
     assert_eq!(dc.ready_state(), RtcDataChannelState::Open);
-    let mut tx = state.peer_tx.clone();
-    dc.set_onmessage(None);
-    pc.set_onicecandidate(None);
-    let peer = Peer::new(peer_id, pc, dc);
-    tx.send(peer).await?;
+
+    state.send_peer(&peer_id, pc, dc).await?;
+
     Ok(())
 }
 
@@ -300,4 +252,102 @@ async fn handle_ice_candidate(candidate: IceCandidate, state: State) -> Result<(
     }
     JsFuture::from(add_ice_promise).await?;
     Ok(())
+}
+
+async fn wait_for_ws_opened(ws: WebSocket) {
+    let (opened_tx, mut opened_rx) = channel::<()>(1);
+    let onopen_cb = Closure::wrap(Box::new(move || {
+        let mut tx = opened_tx.clone();
+        spawn_local(async move {
+            tx.send(()).await.unwrap();
+        });
+    }) as Box<dyn FnMut()>);
+    ws.set_onopen(Some(onopen_cb.as_ref().unchecked_ref()));
+
+    match opened_rx.next().await {
+        Some(()) => (),
+        None => unreachable!(),
+    }
+    ws.set_onopen(None);
+}
+
+async fn init_ws(state: State) -> Result<(WebSocket, Receiver<Error>), Error> {
+    let ws = WebSocket::new(INTRODUCER)?;
+    ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+
+    let (errors_tx, errors_rx) = channel::<Error>(10);
+
+    let w0 = ws.clone();
+    let message_cb = Closure::wrap(Box::new(move |e: MessageEvent| {
+        let mut errors = errors_tx.clone();
+        let s = state.clone();
+        let w1 = w0.clone();
+        spawn_local(async move {
+            match handle_message(e, w1.clone(), s.clone()).await {
+                Ok(()) => (),
+                Err(err) => {
+                    errors.send(err).await.unwrap();
+                }
+            }
+        })
+    }) as Box<dyn FnMut(MessageEvent)>);
+
+    ws.set_onmessage(Some(message_cb.as_ref().unchecked_ref()));
+    message_cb.forget();
+
+    Ok((ws, errors_rx))
+}
+
+async fn wait_for_dc_initiated(dc: RtcDataChannel) {
+    let (done_tx, mut done_rx) = channel::<()>(1);
+
+    let data_cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
+        match ev.data().as_string() {
+            Some(msg) if msg == ACK => {
+                // When we get a message from the peer, we know the data channel is
+                // ready!
+                let mut tx = done_tx.clone();
+                spawn_local(async move {
+                    tx.send(()).await.unwrap();
+                });
+            }
+            msg => panic!("Unexpected message on data stream: {:#?}", msg)
+        }
+    }) as Box<dyn FnMut(MessageEvent)>);
+    dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
+
+    if done_rx.next().await.is_none() {
+        unreachable!()
+    }
+    dc.set_onmessage(None);
+}
+
+async fn local_description(pc: &RtcPeerConnection) -> Result<String, Error> {
+    let offer = JsFuture::from(pc.create_offer()).await?;
+    let sdp_data = Reflect::get(&offer, &JsValue::from_str("sdp"))?
+        .as_string()
+        .unwrap();
+    let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
+    desc.sdp(&sdp_data);
+    JsFuture::from(pc.set_local_description(&desc)).await?;
+
+    Ok(sdp_data)
+}
+
+async fn send_offer(peer_id: &str, sdp_data: &str, ws: WebSocket, state: State) -> Result<(), Error> {
+    let cmd = Command::Offer(Offer {
+        session_id: state.session_id.to_string(),
+        node_id: state.node_id.to_string(),
+        target_id: peer_id.to_string(),
+        sdp_data: sdp_data.to_string(),
+    });
+    send_command(ws, &cmd)
+}
+
+async fn send_join_command(node_id: &str, session_id: &str, ws: WebSocket) -> Result<(), Error> {
+    let cmd = Command::Join(Join {
+        node_id: node_id.to_string(),
+        session_id: session_id.to_string(),
+    });
+    send_command(ws, &cmd)
 }
