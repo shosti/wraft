@@ -426,6 +426,7 @@ dependencies = [
 [[package]]
 name = "yenta_types"
 version = "0.1.0"
+source = "git+ssh://gitea.eevans.me/shosti/yenta_types.git#cf64a92b67ec7d6e1789c2bc066eff1a6712e0e7"
 dependencies = [
  "serde",
 ]
