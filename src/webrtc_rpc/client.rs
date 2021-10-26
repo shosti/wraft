@@ -6,7 +6,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::pin::Pin;
-use tarpc::{Request, Response};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -15,23 +14,24 @@ use web_sys::{MessageEvent, RtcDataChannel, RtcPeerConnection};
 static CHANNEL_SIZE: usize = 1_000_000;
 
 #[derive(Debug)]
-pub struct Peer<T> {
+pub struct Peer<Req, Resp> {
     pub node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
-    requests: Receiver<Request<T>>,
-    responses: Sender<Response<T>>,
+    requests: Receiver<Req>,
+    responses: Sender<Resp>,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
 }
 
 #[derive(Debug)]
-pub struct Client<T> {
-    peers: HashMap<String, Peer<T>>,
+pub struct Client<Req, Resp> {
+    peers: HashMap<String, Peer<Req, Resp>>,
 }
 
-impl<T> Peer<T>
+impl<Req, Resp> Peer<Req, Resp>
 where
-    T: Serialize + DeserializeOwned + 'static,
+    Req: DeserializeOwned + 'static,
+    Resp: Serialize + 'static,
 {
     pub fn new(
         node_id: String,
@@ -51,14 +51,14 @@ where
                     .expect("Expected message in binary format");
                 let data = js_sys::Uint8Array::new(&abuf).to_vec();
 
-                let req = bincode::deserialize::<Request<T>>(&data).unwrap();
+                let req = bincode::deserialize::<Req>(&data).unwrap();
                 req_tx.send(req).await.unwrap();
             });
         }) as Box<dyn FnMut(MessageEvent)>);
         data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
         let send_dc = data_channel.clone();
-        let (responses, mut resp_rx) = channel::<Response<T>>(CHANNEL_SIZE);
+        let (responses, mut resp_rx) = channel::<Resp>(CHANNEL_SIZE);
         spawn_local(async move {
             while let Some(r) = resp_rx.next().await {
                 let data = bincode::serialize(&r).unwrap();
@@ -78,8 +78,8 @@ where
     }
 }
 
-impl<T> Stream for Peer<T> {
-    type Item = Request<T>;
+impl<Req, Resp> Stream for Peer<Req, Resp> {
+    type Item = Req;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.requests.poll_next_unpin(cx)
@@ -90,14 +90,14 @@ impl<T> Stream for Peer<T> {
     }
 }
 
-impl<T> Sink<Response<T>> for Peer<T> {
-    type Error = <Sender<Response<T>> as Sink<Response<T>>>::Error;
+impl<Req, Resp> Sink<Resp> for Peer<Req, Resp> {
+    type Error = <Sender<Resp> as Sink<Resp>>::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.responses.poll_ready_unpin(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Response<T>) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: Resp) -> Result<(), Self::Error> {
         self.responses.start_send_unpin(item)
     }
 
@@ -110,17 +110,18 @@ impl<T> Sink<Response<T>> for Peer<T> {
     }
 }
 
-impl<T> Drop for Peer<T> {
+impl<Req, Resp> Drop for Peer<Req, Resp> {
     fn drop(&mut self) {
         self.data_channel.set_onmessage(None);
     }
 }
 
-impl<T> Client<T>
+impl<Req, Resp> Client<Req, Resp>
 where
-    T: Serialize + DeserializeOwned,
+    Req: DeserializeOwned + 'static,
+    Resp: Serialize + 'static,
 {
-    pub fn new(peers: HashMap<String, Peer<T>>) -> Self {
+    pub fn new(peers: HashMap<String, Peer<Req, Resp>>) -> Self {
         Self { peers }
     }
 }
