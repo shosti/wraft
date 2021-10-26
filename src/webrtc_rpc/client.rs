@@ -3,19 +3,20 @@ use std::marker::PhantomData;
 use web_sys::{RtcDataChannel, RtcPeerConnection};
 
 #[derive(Debug)]
-pub struct Peer<T> {
+pub struct Peer<Req, Resp> {
     pub node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
-    _message: PhantomData<T>,
+    _request: PhantomData<Req>,
+    _response: PhantomData<Resp>,
 }
 
 #[derive(Debug)]
-pub struct Client<T> {
-    peers: HashMap<String, Peer<T>>,
+pub struct Client<Req, Resp> {
+    peers: HashMap<String, Peer<Req, Resp>>,
 }
 
-impl<T> Peer<T> {
+impl<Req, Resp> Peer<Req, Resp> {
     pub fn new(
         node_id: String,
         connection: RtcPeerConnection,
@@ -25,13 +26,14 @@ impl<T> Peer<T> {
             node_id,
             connection,
             data_channel,
-            _message: PhantomData,
+            _request: PhantomData,
+            _response: PhantomData,
         }
     }
 }
 
-impl<T> Client<T> {
-    pub fn new(peers: HashMap<String, Peer<T>>) -> Self {
+impl<Req, Resp> Client<Req, Resp> {
+    pub fn new(peers: HashMap<String, Peer<Req, Resp>>) -> Self {
         Self {
             peers,
         }
