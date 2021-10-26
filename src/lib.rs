@@ -8,6 +8,9 @@ use web_sys::{Document, Event, HtmlButtonElement, HtmlElement, HtmlInputElement,
 use webrtc_rpc::introduce;
 use wasm_bindgen_futures::spawn_local;
 
+#[derive(Clone, Debug)]
+enum RpcMessage {}
+
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
 #[cfg(feature = "wee_alloc")]
@@ -45,7 +48,7 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            introduce(hn.clone(), get_session_key()).await.unwrap();
+            introduce::<RpcMessage>(hn.clone(), get_session_key()).await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));

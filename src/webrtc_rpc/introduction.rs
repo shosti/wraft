@@ -20,16 +20,18 @@ use yenta_types::{Command, IceCandidate, Join, Offer, Session};
 static INTRODUCER: &str = "ws://localhost:9999";
 static ACK: &str = "ACK";
 
+type PeerInfo = (String, RtcPeerConnection, RtcDataChannel);
+
 #[derive(Clone)]
 struct State {
     node_id: Arc<String>,
     session_id: Arc<String>,
     peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
-    peer_tx: Sender<Peer>,
+    peer_tx: Sender<PeerInfo>,
 }
 
 impl State {
-    pub fn new(node_id: &str, session_id: &str, peer_tx: Sender<Peer>) -> Self {
+    pub fn new(node_id: &str, session_id: &str, peer_tx: Sender<PeerInfo>) -> Self {
         Self {
             node_id: Arc::new(node_id.to_string()),
             session_id: Arc::new(session_id.to_string()),
@@ -50,15 +52,14 @@ impl State {
         dc: RtcDataChannel,
     ) -> Result<(), Error> {
         let mut tx = self.peer_tx.clone();
-        let peer = Peer::new(peer_id.to_string(), pc, dc);
-        tx.send(peer).await?;
+        tx.send((peer_id.to_string(), pc, dc)).await?;
 
         Ok(())
     }
 }
 
-pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Client, Error> {
-    let (peer_tx, mut peer_rx) = channel::<Peer>(10);
+pub async fn initiate<T>(node_id: &str, session_id: &str, size: usize) -> Result<Client<T>, Error> {
+    let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
     let state = State::new(node_id, session_id, peer_tx);
 
     let (ws, mut errors_rx) = init_ws(state).await?;
@@ -69,9 +70,9 @@ pub async fn initiate(node_id: &str, session_id: &str, size: usize) -> Result<Cl
     while peers.len() < (size - 1) {
         select! {
             p = peer_rx.next() => {
-                let peer = p.unwrap();
-                console_log!("GOT PEER: {}", peer.node_id);
-                peers.insert(peer.node_id.clone(), peer);
+                let (peer_id, dc, pc) = p.unwrap();
+                let peer = Peer::new(peer_id.clone(), dc, pc);
+                peers.insert(peer_id, peer);
             }
             err = errors_rx.next() => return Err(err.unwrap()),
         }

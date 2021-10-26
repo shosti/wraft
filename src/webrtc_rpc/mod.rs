@@ -1,10 +1,14 @@
 pub mod client;
 mod introduction;
+use std::fmt::Debug;
 
 static CLUSTER_SIZE: usize = 3;
 
-pub async fn introduce(id: String, session_id: String) -> Result<(), error::Error> {
-    let client = introduction::initiate(&id, &session_id, CLUSTER_SIZE).await?;
+pub async fn introduce<T>(id: String, session_id: String) -> Result<(), error::Error>
+where
+    T: Debug + Clone,
+{
+    let client = introduction::initiate::<T>(&id, &session_id, CLUSTER_SIZE).await?;
     println!("CLIENT: {:#?}", client);
     Ok(())
 }
