@@ -11,9 +11,7 @@ use wasm_bindgen_futures::spawn_local;
 #[derive(Clone, Debug)]
 enum RpcMessage {}
 
-// When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
-// allocator.
-#[cfg(feature = "wee_alloc")]
+// Use `wee_alloc` as the global allocator.
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
