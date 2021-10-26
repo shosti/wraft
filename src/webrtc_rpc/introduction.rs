@@ -43,7 +43,12 @@ impl State {
         peers.insert(peer_id.to_string(), pc);
     }
 
-    pub async fn send_peer(&self, peer_id: &str, pc: RtcPeerConnection, dc: RtcDataChannel) -> Result<(), Error> {
+    pub async fn send_peer(
+        &self,
+        peer_id: &str,
+        pc: RtcPeerConnection,
+        dc: RtcDataChannel,
+    ) -> Result<(), Error> {
         let mut tx = self.peer_tx.clone();
         let peer = Peer::new(peer_id.to_string(), pc, dc);
         tx.send(peer).await?;
@@ -170,55 +175,21 @@ fn send_command(ws: WebSocket, command: &Command) -> Result<(), Error> {
 async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), Error> {
     let peer_id = offer.node_id;
     let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
-    {
-        let mut peers = state.peers.write().unwrap();
-        peers.insert(peer_id.clone(), pc.clone());
-    }
+    state.insert_peer(&peer_id, pc.clone());
 
-    let pc1 = pc.clone();
-    let s1 = state.clone();
-    let pid1 = peer_id.clone();
-    let data_cb = Closure::wrap(Box::new(move |ev: RtcDataChannelEvent| {
-        let pc2 = pc1.clone();
-        let s2 = s1.clone();
-        let pid2 = pid1.clone();
+    let (dc_tx, dc_rx) = futures::channel::oneshot::channel::<RtcDataChannel>();
 
-        let dc = ev.channel();
-        dc.send_with_str(ACK).unwrap();
-        let dc_state = dc.ready_state();
-        assert_eq!(dc_state, RtcDataChannelState::Open);
-        pc2.set_ondatachannel(None);
-        spawn_local(async move {
-            let mut tx = s2.clone().peer_tx.clone();
-            let pc = pc2.clone();
-            pc.set_onicecandidate(None);
-            dc.set_onmessage(None);
-            let peer = Peer::new(pid2.clone(), pc, dc);
-            tx.send(peer).await.unwrap();
-        });
-    }) as Box<dyn FnMut(RtcDataChannelEvent)>);
-    pc.set_ondatachannel(Some(data_cb.as_ref().unchecked_ref()));
-    data_cb.forget();
-
-    let mut offer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
-    offer_desc.sdp(&offer.sdp_data);
-    JsFuture::from(pc.set_remote_description(&offer_desc)).await?;
-    let answer = JsFuture::from(pc.create_answer()).await?;
-    let answer_sdp = Reflect::get(&answer, &JsValue::from_str("sdp"))?
-        .as_string()
-        .unwrap();
-    let mut answer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
-    answer_desc.sdp(&answer_sdp);
-    JsFuture::from(pc.set_local_description(&answer_desc)).await?;
-
-    let cmd = Command::Answer(Offer {
-        session_id: state.session_id.to_string(),
-        node_id: state.node_id.to_string(),
-        target_id: peer_id.clone(),
-        sdp_data: answer_sdp,
+    let pc_clone = pc.clone();
+    spawn_local(async move {
+        let dc = wait_for_data_channel(pc_clone).await;
+        dc_tx.send(dc).unwrap();
     });
-    let data = bincode::serialize(&cmd)?;
-    ws.send_with_u8_array(&data)?;
+
+    let answer_sdp = remote_description(&offer.sdp_data, &pc).await?;
+    send_answer(&peer_id, &answer_sdp, ws, state.clone()).await?;
+
+    let dc = dc_rx.await.unwrap();
+    state.send_peer(&peer_id, pc, dc).await?;
 
     Ok(())
 }
@@ -311,7 +282,7 @@ async fn wait_for_dc_initiated(dc: RtcDataChannel) {
                     tx.send(()).await.unwrap();
                 });
             }
-            msg => panic!("Unexpected message on data stream: {:#?}", msg)
+            msg => panic!("Unexpected message on data stream: {:#?}", msg),
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
@@ -334,12 +305,47 @@ async fn local_description(pc: &RtcPeerConnection) -> Result<String, Error> {
     Ok(sdp_data)
 }
 
-async fn send_offer(peer_id: &str, sdp_data: &str, ws: WebSocket, state: State) -> Result<(), Error> {
+async fn remote_description(sdp_data: &str, pc: &RtcPeerConnection) -> Result<String, Error> {
+    let mut offer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
+    offer_desc.sdp(sdp_data);
+    JsFuture::from(pc.set_remote_description(&offer_desc)).await?;
+    let answer = JsFuture::from(pc.create_answer()).await?;
+    let answer_sdp = Reflect::get(&answer, &JsValue::from_str("sdp"))?
+        .as_string()
+        .unwrap();
+    let mut answer_desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
+    answer_desc.sdp(&answer_sdp);
+    JsFuture::from(pc.set_local_description(&answer_desc)).await?;
+
+    Ok(answer_sdp)
+}
+
+async fn send_offer(
+    peer_id: &str,
+    sdp_data: &str,
+    ws: WebSocket,
+    state: State,
+) -> Result<(), Error> {
     let cmd = Command::Offer(Offer {
         session_id: state.session_id.to_string(),
         node_id: state.node_id.to_string(),
         target_id: peer_id.to_string(),
         sdp_data: sdp_data.to_string(),
+    });
+    send_command(ws, &cmd)
+}
+
+async fn send_answer(
+    peer_id: &str,
+    answer_sdp: &str,
+    ws: WebSocket,
+    state: State,
+) -> Result<(), Error> {
+    let cmd = Command::Answer(Offer {
+        session_id: state.session_id.to_string(),
+        node_id: state.node_id.to_string(),
+        target_id: peer_id.to_string(),
+        sdp_data: answer_sdp.to_string(),
     });
     send_command(ws, &cmd)
 }
@@ -350,4 +356,28 @@ async fn send_join_command(node_id: &str, session_id: &str, ws: WebSocket) -> Re
         session_id: session_id.to_string(),
     });
     send_command(ws, &cmd)
+}
+
+async fn wait_for_data_channel(pc: RtcPeerConnection) -> RtcDataChannel {
+    let (done_tx, mut done_rx) = channel::<RtcDataChannel>(1);
+
+    let data_cb = Closure::wrap(Box::new(move |ev: RtcDataChannelEvent| {
+        let dc = ev.channel();
+        dc.send_with_str(ACK).unwrap();
+
+        assert_eq!(dc.ready_state(), RtcDataChannelState::Open);
+
+        let mut tx = done_tx.clone();
+        spawn_local(async move {
+            tx.send(dc).await.unwrap();
+        });
+    }) as Box<dyn FnMut(RtcDataChannelEvent)>);
+    pc.set_ondatachannel(Some(data_cb.as_ref().unchecked_ref()));
+
+    if let Some(dc) = done_rx.next().await {
+        pc.set_ondatachannel(None);
+        dc
+    } else {
+        panic!("No channel received")
+    }
 }
