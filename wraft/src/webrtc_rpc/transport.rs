@@ -58,21 +58,29 @@ where
         spawn_local(async move {
             handle_client_requests(client_req_rx, client_resp_rx, req_dc).await;
         });
-        // let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
-        //     let tx = req_tx.clone();
-        //     spawn_local(async move {
-        //         let mut req_tx = tx.clone();
-        //         let abuf = ev
-        //             .data()
-        //             .dyn_into::<js_sys::ArrayBuffer>()
-        //             .expect("Expected message in binary format");
-        //         let data = js_sys::Uint8Array::new(&abuf).to_vec();
+        let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
+            let mut resp_tx = client_resp_tx.clone();
+            spawn_local(async move {
+                let abuf = ev
+                    .data()
+                    .dyn_into::<js_sys::ArrayBuffer>()
+                    .expect("Expected message in binary format");
+                let data = js_sys::Uint8Array::new(&abuf).to_vec();
 
-        //         let req = bincode::deserialize::<Req>(&data).unwrap();
-        //         req_tx.send(req).await.unwrap();
-        //     });
-        // }) as Box<dyn FnMut(MessageEvent)>);
-        // data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+                let msg = bincode::deserialize::<Message<Req, Resp>>(&data).unwrap();
+                match msg {
+                    Message::Request { idx: _, req: _ } => {
+                        // Got a request from the other side's client
+                        unimplemented!()
+                    },
+                    Message::Response { idx: _, resp: _ } => {
+                        // Got a response to one of our requests
+                        resp_tx.send(msg).await.unwrap();
+                    }
+                }
+            });
+        }) as Box<dyn FnMut(MessageEvent)>);
+        data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
         // let send_dc = data_channel.clone();
         // let (responses, mut resp_rx) = channel::<Resp>(CHANNEL_SIZE);
@@ -144,7 +152,7 @@ async fn handle_client_requests<Req, Resp>(
 
                 let mut tx = timeout_tx.clone();
                 spawn_local(async move {
-                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
+                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await.unwrap();
                     tx.send(idx).await.unwrap();
                 });
             }
@@ -182,10 +190,9 @@ async fn handle_client_requests<Req, Resp>(
 
 impl<Req, Resp> Client<Req, Resp> {
     pub async fn rpc(&mut self, req: Req) -> Result<Resp, Error> {
-        let (resp_tx, mut resp_rx) = oneshot::channel();
+        let (resp_tx, resp_rx) = oneshot::channel();
         self.req_tx.send((req, resp_tx)).await.unwrap();
 
-        let (timeout_tx, mut timeout) = oneshot::channel::<()>();
         resp_rx.await.unwrap()
     }
 }
