@@ -70,13 +70,6 @@ where
             _message_cb: cb,
         }
     }
-
-    pub fn channels(self) -> Channel<Req, Resp> {
-        Channel {
-            rx: self.requests,
-            tx: self.responses,
-        }
-    }
 }
 
 #[derive(Debug)]
