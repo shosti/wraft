@@ -1,10 +1,10 @@
-pub mod transport;
 mod introduction;
-use transport::PeerTransport;
+pub mod transport;
 use futures::channel::mpsc::Sender;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
+use transport::PeerTransport;
 
 pub async fn introduce<Req, Resp>(
     id: &str,
@@ -12,8 +12,8 @@ pub async fn introduce<Req, Resp>(
     peers: Sender<PeerTransport<Req, Resp>>,
 ) -> Result<(), error::Error>
 where
-    Req: DeserializeOwned + Debug + 'static,
-    Resp: Serialize + Debug + 'static,
+    Req: Serialize + DeserializeOwned + Debug + 'static,
+    Resp: Serialize + DeserializeOwned + Debug + 'static,
 {
     let client = introduction::initiate::<Req, Resp>(id, session_id, peers).await?;
     Ok(client)

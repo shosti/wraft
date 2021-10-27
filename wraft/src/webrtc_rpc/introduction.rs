@@ -66,8 +66,8 @@ pub async fn initiate<Req, Resp>(
     mut peers: Sender<PeerTransport<Req, Resp>>,
 ) -> Result<(), Error>
 where
-    Req: DeserializeOwned + Debug + 'static,
-    Resp: Serialize + Debug + 'static,
+    Req: Serialize + DeserializeOwned + Debug + 'static,
+    Resp: Serialize + DeserializeOwned + Debug + 'static,
 {
     let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
     let state = State::new(node_id, session_id, peer_tx);

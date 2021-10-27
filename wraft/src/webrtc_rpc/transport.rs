@@ -16,9 +16,10 @@ static CHANNEL_SIZE: usize = 1024;
 static MAX_IN_FLIGHT_REQUESTS: usize = 1024;
 static REQUEST_TIMEOUT_MILLIS: u64 = 1000;
 
+#[derive(Serialize, Deserialize)]
 enum Message<Req, Resp> {
-    Request { id: usize, request: Req },
-    Response { id: usize, response: Resp },
+    Request { idx: usize, req: Req },
+    Response { idx: usize, resp: Resp },
 }
 
 #[derive(Debug)]
@@ -39,8 +40,8 @@ pub struct Client<Req, Resp> {
 
 impl<Req, Resp> PeerTransport<Req, Resp>
 where
-    Req: DeserializeOwned + Debug + 'static,
-    Resp: Serialize + Debug + 'static,
+    Req: Serialize + DeserializeOwned + Debug + 'static,
+    Resp: Serialize + DeserializeOwned + Debug + 'static,
 {
     pub fn new(
         node_id: String,
@@ -105,8 +106,8 @@ async fn handle_client_requests<Req, Resp>(
     mut resp_rx: Receiver<Message<Req, Resp>>,
     dc: RtcDataChannel,
 ) where
-    Req: Debug + 'static,
-    Resp: Debug + 'static,
+    Req: Serialize + Debug + 'static,
+    Resp: Serialize + Debug + 'static,
 {
     let mut in_flight: Vec<Option<oneshot::Sender<Result<Resp, Error>>>> =
         Vec::with_capacity(MAX_IN_FLIGHT_REQUESTS);
@@ -122,8 +123,19 @@ async fn handle_client_requests<Req, Resp>(
                     tx.send(Err(Error::TooManyInFlightRequests)).unwrap();
                     continue;
                 }
-                next_req_idx += 1;
 
+                let msg: Message<Req, Resp> = Message::Request {
+                    idx,
+                    req,
+                };
+
+                let data = bincode::serialize(&msg).unwrap();
+                if let Err(err) = dc.send_with_u8_array(&data) {
+                    tx.send(Err(Error::Js(err))).unwrap();
+                    continue;
+                }
+
+                next_req_idx += 1;
                 in_flight[idx] = Some(tx);
             }
             res = resp_rx.next() => {
@@ -163,9 +175,10 @@ impl<Req, Resp> Drop for PeerTransport<Req, Resp> {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub enum Error {
     String(String),
+    Js(JsValue),
     RequestTimeout,
     TooManyInFlightRequests,
 }
@@ -174,6 +187,13 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Error::String(msg) => write!(f, "{}", msg),
+            Error::Js(err) => {
+                if err.is_string() {
+                    write!(f, "JavaScript error: {}", err.as_string().unwrap())
+                } else {
+                    write!(f, "JavaScript error: {:?}", err)
+                }
+            }
             Error::RequestTimeout => write!(f, "request timeout"),
             Error::TooManyInFlightRequests => write!(f, "too many in-flight requests"),
         }
