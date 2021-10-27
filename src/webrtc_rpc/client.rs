@@ -4,7 +4,6 @@ use futures::{Sink, Stream};
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::pin::Pin;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -21,11 +20,6 @@ pub struct Peer<Req, Resp> {
     requests: Receiver<Req>,
     responses: Sender<Resp>,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
-}
-
-#[derive(Debug)]
-pub struct Client<Req, Resp> {
-    pub peers: HashMap<String, Peer<Req, Resp>>,
 }
 
 impl<Req, Resp> Peer<Req, Resp>
@@ -76,66 +70,62 @@ where
             _message_cb: cb,
         }
     }
+
+    pub fn channels(self) -> Channel<Req, Resp> {
+        Channel {
+            rx: self.requests,
+            tx: self.responses,
+        }
+    }
 }
 
-impl<Req, Resp> Stream for Peer<Req, Resp> {
-    type Item = Result<Req, Error>;
+#[derive(Debug)]
+pub struct Channel<Item, SinkItem> {
+    rx: Receiver<Item>,
+    tx: Sender<SinkItem>,
+}
+
+impl<Item, SinkItem> Stream for Channel<Item, SinkItem> {
+    type Item = Result<Item, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.requests.poll_next_unpin(cx).map(|r| r.map(Ok))
+        self.rx.poll_next_unpin(cx).map(|r| r.map(Ok))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.requests.size_hint()
+        self.rx.size_hint()
     }
 }
 
-impl<Req, Resp> Sink<Resp> for Peer<Req, Resp> {
+impl<Item, SinkItem> Sink<SinkItem> for Channel<Item, SinkItem> {
     type Error = Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.responses
+        self.tx
             .poll_ready_unpin(cx)
             .map_err(|e| Error::String(format!("{:?}", e)))
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Resp) -> Result<(), Self::Error> {
-        self.responses
+    fn start_send(mut self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
+        self.tx
             .start_send_unpin(item)
             .map_err(|e| Error::String(format!("{:?}", e)))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.responses
+        self.tx
             .poll_flush_unpin(cx)
             .map_err(|e| Error::String(format!("{:?}", e)))
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.responses
+        self.tx
             .poll_close_unpin(cx)
             .map_err(|e| Error::String(format!("{:?}", e)))
     }
 }
 
-impl<Req, Resp> Drop for Peer<Req, Resp> {
-    fn drop(&mut self) {
-        self.data_channel.set_onmessage(None);
-    }
-}
-
-impl<Req, Resp> Client<Req, Resp>
-where
-    Req: DeserializeOwned + 'static,
-    Resp: Serialize + 'static,
-{
-    pub fn new(peers: HashMap<String, Peer<Req, Resp>>) -> Self {
-        Self { peers }
-    }
-}
-
-impl<Req, Resp> Unpin for Peer<Req, Resp> {
-}
+impl<Req, Resp> Unpin for Peer<Req, Resp> {}
 
 #[derive(Debug, Deserialize)]
 pub enum Error {

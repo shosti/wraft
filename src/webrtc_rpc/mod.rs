@@ -1,18 +1,21 @@
 pub mod client;
 mod introduction;
-use client::Client;
+use client::Peer;
+use futures::channel::mpsc::Sender;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
 
-static CLUSTER_SIZE: usize = 3;
-
-pub async fn introduce<Req, Resp>(id: &str, session_id: &str) -> Result<Client<Req, Resp>, error::Error>
+pub async fn introduce<Req, Resp>(
+    id: &str,
+    session_id: &str,
+    peers: Sender<Peer<Req, Resp>>,
+) -> Result<(), error::Error>
 where
     Req: DeserializeOwned + Debug + 'static,
     Resp: Serialize + Debug + 'static,
 {
-    let client = introduction::initiate::<Req, Resp>(id, session_id, CLUSTER_SIZE).await?;
+    let client = introduction::initiate::<Req, Resp>(id, session_id, peers).await?;
     Ok(client)
 }
 

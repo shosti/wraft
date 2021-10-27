@@ -1,5 +1,4 @@
-use crate::console_log;
-use crate::webrtc_rpc::client::{Client, Peer};
+use crate::webrtc_rpc::client::Peer;
 use crate::webrtc_rpc::error::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::select;
@@ -63,8 +62,8 @@ impl State {
 pub async fn initiate<Req, Resp>(
     node_id: &str,
     session_id: &str,
-    size: usize,
-) -> Result<Client<Req, Resp>, Error>
+    mut peers: Sender<Peer<Req, Resp>>,
+) -> Result<(), Error>
 where
     Req: DeserializeOwned + 'static,
     Resp: Serialize + 'static,
@@ -76,19 +75,16 @@ where
     wait_for_ws_opened(ws.clone()).await;
     send_join_command(node_id, session_id, ws).await?;
 
-    let mut peers = HashMap::new();
-    while peers.len() < (size - 1) {
+    loop {
         select! {
             p = peer_rx.next() => {
                 let (peer_id, dc, pc) = p.unwrap();
                 let peer = Peer::new(peer_id.clone(), dc, pc);
-                peers.insert(peer_id, peer);
+                peers.send(peer).await?;
             }
             err = errors_rx.next() => return Err(err.unwrap()),
         }
     }
-    console_log!("WE DID IT!!!");
-    Ok(Client::new(peers))
 }
 
 async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<(), Error> {

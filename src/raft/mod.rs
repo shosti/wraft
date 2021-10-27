@@ -1,15 +1,17 @@
 use crate::console_log;
+use crate::webrtc_rpc::client::Peer;
 use crate::webrtc_rpc::introduce;
+use futures::channel::mpsc::channel;
 use futures::future::Ready;
 use futures::prelude::*;
 use serde::{Deserialize, Serialize};
 use tarpc::context::Context;
-use tarpc::server;
+use tarpc::server::{BaseChannel, Channel};
 use tarpc::{ClientMessage, Response};
 use wasm_bindgen_futures::spawn_local;
 
 #[tarpc::service]
-trait RaftRPC {
+pub trait RaftRPC {
     async fn ping(p: RpcMessage) -> RpcMessage;
 }
 
@@ -19,10 +21,10 @@ pub struct Raft {
 }
 
 #[derive(Clone)]
-struct RaftRPCServer {}
+pub struct RaftRPCServer;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-enum RpcMessage {
+pub enum RpcMessage {
     Ping,
     Pong,
 }
@@ -35,24 +37,38 @@ impl Raft {
         }
     }
 
-    pub async fn run(&mut self) -> anyhow::Result<()> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         console_log!("RUNNING!");
-        let mut rtc_client = introduce::<ClientMessage<RpcMessage>, Response<RpcMessage>>(
+        let (peers_tx, peers_rx) = channel(10);
+        introduce::<ClientMessage<RaftRPCRequest>, Response<RaftRPCResponse>>(
             &self.node_id,
             &self.session_key,
+            peers_tx,
         )
         .await
         .unwrap();
-        console_log!("WE'RE ALL INTRODUCED!");
 
-        for peer in rtc_client.peers.values_mut() {
-            let server = server::BaseChannel::with_defaults(peer);
-            println!("SERVER: {:#?}", server);
-        }
+        peers_rx.for_each_concurrent(10, serve_raft_rpc).await;
 
         future::pending::<()>().await;
         unreachable!()
     }
+}
+
+async fn serve_raft_rpc(peer: Peer<ClientMessage<RaftRPCRequest>, Response<RaftRPCResponse>>)
+{
+    let ch = peer.channels();
+    let mut requests = BaseChannel::with_defaults(ch).requests();
+    while let Some(req) = requests.next().await {
+        match req {
+            Ok(req) => spawn_local(async move {
+                req.execute(RaftRPCServer.serve()).await;
+            }),
+            Err(err) => panic!("Request error: {:#?}", err),
+        }
+    }
+
+    future::pending::<()>().await;
 }
 
 impl RaftRPC for RaftRPCServer {
