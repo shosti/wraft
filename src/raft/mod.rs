@@ -40,13 +40,18 @@ impl Raft {
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         console_log!("RUNNING!");
         let (peers_tx, peers_rx) = channel(10);
-        introduce::<ClientMessage<RaftRPCRequest>, Response<RaftRPCResponse>>(
-            &self.node_id,
-            &self.session_key,
-            peers_tx,
-        )
-        .await
-        .unwrap();
+
+        let node_id = self.node_id.clone();
+        let session_key = self.session_key.clone();
+        spawn_local(async move {
+            introduce::<ClientMessage<RaftRPCRequest>, Response<RaftRPCResponse>>(
+                &node_id,
+                &session_key,
+                peers_tx,
+            )
+            .await
+            .unwrap();
+        });
 
         peers_rx.for_each_concurrent(10, serve_raft_rpc).await;
 
@@ -55,8 +60,8 @@ impl Raft {
     }
 }
 
-async fn serve_raft_rpc(peer: Peer<ClientMessage<RaftRPCRequest>, Response<RaftRPCResponse>>)
-{
+async fn serve_raft_rpc(peer: Peer<ClientMessage<RaftRPCRequest>, Response<RaftRPCResponse>>) {
+    console_log!("SERVING FOR {}", peer.node_id);
     let ch = peer.channels();
     let mut requests = BaseChannel::with_defaults(ch).requests();
     while let Some(req) = requests.next().await {
