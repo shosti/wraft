@@ -1,5 +1,5 @@
-use crate::webrtc_rpc::transport::PeerTransport;
 use crate::webrtc_rpc::error::Error;
+use crate::webrtc_rpc::transport::PeerTransport;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::select;
 use futures::sink::SinkExt;
@@ -8,6 +8,7 @@ use js_sys::Reflect;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -65,8 +66,8 @@ pub async fn initiate<Req, Resp>(
     mut peers: Sender<PeerTransport<Req, Resp>>,
 ) -> Result<(), Error>
 where
-    Req: DeserializeOwned + 'static,
-    Resp: Serialize + 'static,
+    Req: DeserializeOwned + Debug + 'static,
+    Resp: Serialize + Debug + 'static,
 {
     let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
     let state = State::new(node_id, session_id, peer_tx);
