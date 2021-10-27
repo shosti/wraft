@@ -1,5 +1,6 @@
 use crate::console_log;
 use crate::util::sleep;
+use async_trait::async_trait;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::{select, SinkExt, StreamExt};
@@ -23,13 +24,13 @@ enum Message<Req, Resp> {
     Response { idx: usize, resp: Resp },
 }
 
-#[derive(Debug)]
 pub struct PeerTransport<Req, Resp> {
     node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
+    request_handler: Option<Box<dyn RequestHandler<Req, Resp>>>,
     req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
-    // _message_cb: Closure<dyn FnMut(MessageEvent)>,
+    _message_cb: Closure<dyn FnMut(MessageEvent)>,
     _resp: PhantomData<Resp>,
 }
 
@@ -37,6 +38,16 @@ pub struct PeerTransport<Req, Resp> {
 pub struct Client<Req, Resp> {
     req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
     _resp: PhantomData<Resp>,
+}
+
+#[derive(Debug)]
+pub struct RequestContext {
+    source_node_id: String,
+}
+
+#[async_trait]
+pub trait RequestHandler<Req, Resp> {
+    async fn handle(&self, req: Req, cx: RequestContext) -> Resp;
 }
 
 impl<Req, Resp> PeerTransport<Req, Resp>
@@ -72,7 +83,7 @@ where
                     Message::Request { idx: _, req: _ } => {
                         // Got a request from the other side's client
                         unimplemented!()
-                    },
+                    }
                     Message::Response { idx: _, resp: _ } => {
                         // Got a response to one of our requests
                         resp_tx.send(msg).await.unwrap();
@@ -82,24 +93,19 @@ where
         }) as Box<dyn FnMut(MessageEvent)>);
         data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
-        // let send_dc = data_channel.clone();
-        // let (responses, mut resp_rx) = channel::<Resp>(CHANNEL_SIZE);
-        // spawn_local(async move {
-        //     while let Some(r) = resp_rx.next().await {
-        //         let data = bincode::serialize(&r).unwrap();
-        //         // TODO: error handling
-        //         send_dc.send_with_u8_array(&data).unwrap();
-        //     }
-        // });
-
         Self {
             node_id,
             connection,
             data_channel,
+            request_handler: None,
             req_tx: client_req_tx,
-            // _message_cb: cb,
+            _message_cb: cb,
             _resp: PhantomData,
         }
+    }
+
+    pub fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
+        self.request_handler = Some(Box::new(handler));
     }
 
     pub fn client(&self) -> Client<Req, Resp> {
@@ -200,6 +206,17 @@ impl<Req, Resp> Client<Req, Resp> {
 impl<Req, Resp> Drop for PeerTransport<Req, Resp> {
     fn drop(&mut self) {
         self.data_channel.set_onmessage(None);
+    }
+}
+
+impl<Req, Resp> Debug for PeerTransport<Req, Resp> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            f,
+            "PeerTransport for {} ({:?})",
+            self.node_id,
+            self.data_channel.ready_state()
+        )
     }
 }
 
