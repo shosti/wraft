@@ -116,6 +116,8 @@ async fn handle_client_requests<Req, Resp>(
     let mut min_req_idx: usize = 0;
     let mut next_req_idx: usize = 0;
 
+    let (timeout_tx, mut timeout_rx) = channel::<usize>(MAX_IN_FLIGHT_REQUESTS);
+
     loop {
         select! {
             res = req_rx.next() => {
@@ -139,6 +141,12 @@ async fn handle_client_requests<Req, Resp>(
 
                 next_req_idx += 1;
                 in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some(tx);
+
+                let mut tx = timeout_tx.clone();
+                spawn_local(async move {
+                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
+                    tx.send(idx).await.unwrap();
+                });
             }
             res = resp_rx.next() => {
                 let msg = res.expect("client response channel is closed");
@@ -154,6 +162,17 @@ async fn handle_client_requests<Req, Resp>(
                     }
                 }
             }
+            res = timeout_rx.next() => {
+                let idx = res.expect("timeout channel closed");
+                let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
+                in_flight.push(None);
+                assert_eq!(in_flight.len(), MAX_IN_FLIGHT_REQUESTS + 1);
+
+                if let Some(tx) = tx_opt {
+                    console_log!("request {} timed out", idx);
+                    tx.send(Err(Error::RequestTimeout)).unwrap();
+                }
+            }
         }
         while min_req_idx < next_req_idx && in_flight[min_req_idx].is_none() {
             min_req_idx += 1;
@@ -167,21 +186,7 @@ impl<Req, Resp> Client<Req, Resp> {
         self.req_tx.send((req, resp_tx)).await.unwrap();
 
         let (timeout_tx, mut timeout) = oneshot::channel::<()>();
-        spawn_local(async {
-            sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS))
-                .await
-                .unwrap();
-            timeout_tx.send(()).unwrap();
-        });
-        select! {
-            res = resp_rx => {
-                match res {
-                    Ok(resp) => resp,
-                    Err(err)  => panic!("Response channel error: {}", err),
-                }
-            }
-            _ = timeout => Err(Error::RequestTimeout),
-        }
+        resp_rx.await.unwrap()
     }
 }
 
