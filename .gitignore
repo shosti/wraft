@@ -1,4 +1,5 @@
 **/target
+wraft/target
 **/*.rs.bk
 bin/
 **/pkg/

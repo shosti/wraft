@@ -1,4 +1,4 @@
-use crate::webrtc_rpc::client::Peer;
+use crate::webrtc_rpc::transport::PeerTransport;
 use crate::webrtc_rpc::error::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::select;
@@ -62,7 +62,7 @@ impl State {
 pub async fn initiate<Req, Resp>(
     node_id: &str,
     session_id: &str,
-    mut peers: Sender<Peer<Req, Resp>>,
+    mut peers: Sender<PeerTransport<Req, Resp>>,
 ) -> Result<(), Error>
 where
     Req: DeserializeOwned + 'static,
@@ -79,7 +79,7 @@ where
         select! {
             p = peer_rx.next() => {
                 let (peer_id, dc, pc) = p.unwrap();
-                let peer = Peer::new(peer_id.clone(), dc, pc);
+                let peer = PeerTransport::new(peer_id.clone(), dc, pc);
                 peers.send(peer).await?;
             }
             err = errors_rx.next() => return Err(err.unwrap()),

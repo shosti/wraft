@@ -1,5 +1,5 @@
 use crate::console_log;
-use crate::webrtc_rpc::client::Peer;
+use crate::webrtc_rpc::transport::PeerTransport;
 use crate::webrtc_rpc::introduce;
 use futures::channel::mpsc::channel;
 use futures::prelude::*;
@@ -48,7 +48,7 @@ impl Raft {
     }
 }
 
-async fn handle_peer(peer: Peer<RPCRequest, RPCResponse>) {
+async fn handle_peer(peer: PeerTransport<RPCRequest, RPCResponse>) {
     println!("PEER: {:#?}", peer);
 
     future::pending::<()>().await;

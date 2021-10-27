@@ -1,6 +1,6 @@
-pub mod client;
+pub mod transport;
 mod introduction;
-use client::Peer;
+use transport::PeerTransport;
 use futures::channel::mpsc::Sender;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -9,7 +9,7 @@ use std::fmt::Debug;
 pub async fn introduce<Req, Resp>(
     id: &str,
     session_id: &str,
-    peers: Sender<Peer<Req, Resp>>,
+    peers: Sender<PeerTransport<Req, Resp>>,
 ) -> Result<(), error::Error>
 where
     Req: DeserializeOwned + Debug + 'static,

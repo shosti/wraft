@@ -1,10 +1,7 @@
 use futures::channel::mpsc::{channel, Receiver, Sender};
-use futures::task::{Context, Poll};
-use futures::{Sink, Stream};
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -13,8 +10,8 @@ use web_sys::{MessageEvent, RtcDataChannel, RtcPeerConnection};
 static CHANNEL_SIZE: usize = 1_000_000;
 
 #[derive(Debug)]
-pub struct Peer<Req, Resp> {
-    pub node_id: String,
+pub struct PeerTransport<Req, Resp> {
+    node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
     requests: Receiver<Req>,
@@ -22,7 +19,7 @@ pub struct Peer<Req, Resp> {
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
 }
 
-impl<Req, Resp> Peer<Req, Resp>
+impl<Req, Resp> PeerTransport<Req, Resp>
 where
     Req: DeserializeOwned + 'static,
     Resp: Serialize + 'static,
@@ -71,54 +68,6 @@ where
         }
     }
 }
-
-#[derive(Debug)]
-pub struct Channel<Item, SinkItem> {
-    rx: Receiver<Item>,
-    tx: Sender<SinkItem>,
-}
-
-impl<Item, SinkItem> Stream for Channel<Item, SinkItem> {
-    type Item = Result<Item, Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.rx.poll_next_unpin(cx).map(|r| r.map(Ok))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.rx.size_hint()
-    }
-}
-
-impl<Item, SinkItem> Sink<SinkItem> for Channel<Item, SinkItem> {
-    type Error = Error;
-
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.tx
-            .poll_ready_unpin(cx)
-            .map_err(|e| Error::String(format!("{:?}", e)))
-    }
-
-    fn start_send(mut self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
-        self.tx
-            .start_send_unpin(item)
-            .map_err(|e| Error::String(format!("{:?}", e)))
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.tx
-            .poll_flush_unpin(cx)
-            .map_err(|e| Error::String(format!("{:?}", e)))
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.tx
-            .poll_close_unpin(cx)
-            .map_err(|e| Error::String(format!("{:?}", e)))
-    }
-}
-
-impl<Req, Resp> Unpin for Peer<Req, Resp> {}
 
 #[derive(Debug, Deserialize)]
 pub enum Error {
