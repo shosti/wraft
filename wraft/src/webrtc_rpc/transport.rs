@@ -26,10 +26,10 @@ enum Message<Req, Resp> {
 
 pub struct PeerTransport<Req, Resp> {
     node_id: String,
-    connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
-    request_handler: Option<Box<dyn RequestHandler<Req, Resp>>>,
-    req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
+    client_req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
+    server_req_rx: Receiver<(Req, oneshot::Sender<Resp>)>,
+    _connection: RtcPeerConnection,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
     _resp: PhantomData<Resp>,
 }
@@ -40,7 +40,7 @@ pub struct Client<Req, Resp> {
     _resp: PhantomData<Resp>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RequestContext {
     source_node_id: String,
 }
@@ -64,13 +64,17 @@ where
 
         let (client_req_tx, client_req_rx) = channel(CHANNEL_SIZE);
         let (client_resp_tx, client_resp_rx) = channel(CHANNEL_SIZE);
+        let (server_req_tx, server_req_rx) = channel(CHANNEL_SIZE);
 
         let req_dc = data_channel.clone();
         spawn_local(async move {
             handle_client_requests(client_req_rx, client_resp_rx, req_dc).await;
         });
+        let msg_dc = data_channel.clone();
         let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
-            let mut resp_tx = client_resp_tx.clone();
+            let mut client_tx = client_resp_tx.clone();
+            let mut server_tx = server_req_tx.clone();
+            let dc = msg_dc.clone();
             spawn_local(async move {
                 let abuf = ev
                     .data()
@@ -80,13 +84,21 @@ where
 
                 let msg = bincode::deserialize::<Message<Req, Resp>>(&data).unwrap();
                 match msg {
-                    Message::Request { idx: _, req: _ } => {
+                    Message::Request { idx, req } => {
                         // Got a request from the other side's client
-                        unimplemented!()
+                        let (tx, rx) = oneshot::channel();
+                        server_tx.send((req, tx)).await.unwrap();
+                        let resp = rx.await.unwrap();
+
+                        let msg: Message<Req, Resp> = Message::Response { idx, resp };
+                        let data = bincode::serialize(&msg).unwrap();
+                        if let Err(err) = dc.send_with_u8_array(&data) {
+                            console_log!("error sending data: {:?}", err);
+                        }
                     }
                     Message::Response { idx: _, resp: _ } => {
                         // Got a response to one of our requests
-                        resp_tx.send(msg).await.unwrap();
+                        client_tx.send(msg).await.unwrap();
                     }
                 }
             });
@@ -95,22 +107,26 @@ where
 
         Self {
             node_id,
-            connection,
             data_channel,
-            request_handler: None,
-            req_tx: client_req_tx,
+            client_req_tx,
+            server_req_rx,
+            _connection: connection,
             _message_cb: cb,
             _resp: PhantomData,
         }
     }
 
-    pub fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
-        self.request_handler = Some(Box::new(handler));
+    pub async fn serve(&'static mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
+        let cx = RequestContext { source_node_id: self.node_id.clone() };
+        while let Some((req, tx)) = self.server_req_rx.next().await {
+            let resp = handler.handle(req, cx.clone()).await;
+            tx.send(resp).unwrap();
+        }
     }
 
     pub fn client(&self) -> Client<Req, Resp> {
         Client {
-            req_tx: self.req_tx.clone(),
+            req_tx: self.client_req_tx.clone(),
             _resp: PhantomData,
         }
     }
@@ -222,7 +238,6 @@ impl<Req, Resp> Debug for PeerTransport<Req, Resp> {
 
 #[derive(Debug)]
 pub enum Error {
-    String(String),
     Js(JsValue),
     RequestTimeout,
     TooManyInFlightRequests,
@@ -231,7 +246,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            Error::String(msg) => write!(f, "{}", msg),
             Error::Js(err) => {
                 if err.is_string() {
                     write!(f, "JavaScript error: {}", err.as_string().unwrap())
