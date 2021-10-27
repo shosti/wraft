@@ -16,7 +16,7 @@ use web_sys::{
     MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState, RtcIceCandidateInit,
     RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
 };
-use yenta_types::{Command, IceCandidate, Join, Offer, Session};
+use webrtc_introducer_types::{Command, IceCandidate, Join, Offer, Session};
 
 static INTRODUCER: &str = "ws://localhost:9999";
 static ACK: &str = "ACK";

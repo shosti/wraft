@@ -17,7 +17,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 bincode = "1.3"
 serde = { version = "1.0", features = ["derive"] }
-yenta_types = { git = "ssh://gitea.eevans.me/shosti/yenta_types.git" }
+webrtc-introducer-types = { path = "../webrtc-introducer-types" }
 getrandom = { version = "0.2", features = ["js"] }
 wee_alloc = "0.4"
 

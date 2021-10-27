@@ -392,6 +392,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "webrtc-introducer-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "wee_alloc"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -439,14 +446,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+ "webrtc-introducer-types",
  "wee_alloc",
- "yenta_types",
-]
-
-[[package]]
-name = "yenta_types"
-version = "0.1.0"
-source = "git+ssh://gitea.eevans.me/shosti/yenta_types.git#cf64a92b67ec7d6e1789c2bc066eff1a6712e0e7"
-dependencies = [
- "serde",
 ]
