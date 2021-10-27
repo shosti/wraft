@@ -7,7 +7,6 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -31,13 +30,11 @@ pub struct PeerTransport<Req, Resp> {
     server_req_rx: Receiver<(Req, oneshot::Sender<Resp>)>,
     _connection: RtcPeerConnection,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
-    _resp: PhantomData<Resp>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
     req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
-    _resp: PhantomData<Resp>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +109,6 @@ where
             server_req_rx,
             _connection: connection,
             _message_cb: cb,
-            _resp: PhantomData,
         }
     }
 
@@ -127,7 +123,6 @@ where
     pub fn client(&self) -> Client<Req, Resp> {
         Client {
             req_tx: self.client_req_tx.clone(),
-            _resp: PhantomData,
         }
     }
 }
