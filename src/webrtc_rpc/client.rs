@@ -3,7 +3,7 @@ use futures::task::{Context, Poll};
 use futures::{Sink, Stream};
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
 use wasm_bindgen::prelude::*;
@@ -25,7 +25,7 @@ pub struct Peer<Req, Resp> {
 
 #[derive(Debug)]
 pub struct Client<Req, Resp> {
-    peers: HashMap<String, Peer<Req, Resp>>,
+    pub peers: HashMap<String, Peer<Req, Resp>>,
 }
 
 impl<Req, Resp> Peer<Req, Resp>
@@ -79,10 +79,10 @@ where
 }
 
 impl<Req, Resp> Stream for Peer<Req, Resp> {
-    type Item = Req;
+    type Item = Result<Req, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.requests.poll_next_unpin(cx)
+        self.requests.poll_next_unpin(cx).map(|r| r.map(Ok))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -91,22 +91,30 @@ impl<Req, Resp> Stream for Peer<Req, Resp> {
 }
 
 impl<Req, Resp> Sink<Resp> for Peer<Req, Resp> {
-    type Error = <Sender<Resp> as Sink<Resp>>::Error;
+    type Error = Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.responses.poll_ready_unpin(cx)
+        self.responses
+            .poll_ready_unpin(cx)
+            .map_err(|e| Error::String(format!("{:?}", e)))
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Resp) -> Result<(), Self::Error> {
-        self.responses.start_send_unpin(item)
+        self.responses
+            .start_send_unpin(item)
+            .map_err(|e| Error::String(format!("{:?}", e)))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.responses.poll_flush_unpin(cx)
+        self.responses
+            .poll_flush_unpin(cx)
+            .map_err(|e| Error::String(format!("{:?}", e)))
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.responses.poll_close_unpin(cx)
+        self.responses
+            .poll_close_unpin(cx)
+            .map_err(|e| Error::String(format!("{:?}", e)))
     }
 }
 
@@ -125,3 +133,21 @@ where
         Self { peers }
     }
 }
+
+impl<Req, Resp> Unpin for Peer<Req, Resp> {
+}
+
+#[derive(Debug, Deserialize)]
+pub enum Error {
+    String(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            Error::String(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
