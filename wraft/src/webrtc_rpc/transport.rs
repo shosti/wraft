@@ -1,3 +1,4 @@
+use crate::console_log;
 use crate::util::sleep;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
@@ -12,9 +13,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{MessageEvent, RtcDataChannel, RtcPeerConnection};
 
-static CHANNEL_SIZE: usize = 1024;
-static MAX_IN_FLIGHT_REQUESTS: usize = 1024;
-static REQUEST_TIMEOUT_MILLIS: u64 = 1000;
+const CHANNEL_SIZE: usize = 1024;
+const MAX_IN_FLIGHT_REQUESTS: usize = 1024;
+const REQUEST_TIMEOUT_MILLIS: u64 = 1000;
 
 #[derive(Serialize, Deserialize)]
 enum Message<Req, Resp> {
@@ -109,8 +110,9 @@ async fn handle_client_requests<Req, Resp>(
     Req: Serialize + Debug + 'static,
     Resp: Serialize + Debug + 'static,
 {
+    // Add extra element at the end for swap_remove dance
     let mut in_flight: Vec<Option<oneshot::Sender<Result<Resp, Error>>>> =
-        Vec::with_capacity(MAX_IN_FLIGHT_REQUESTS);
+        (0..(MAX_IN_FLIGHT_REQUESTS + 1)).map(|_| None).collect();
     let mut min_req_idx: usize = 0;
     let mut next_req_idx: usize = 0;
 
@@ -136,11 +138,25 @@ async fn handle_client_requests<Req, Resp>(
                 }
 
                 next_req_idx += 1;
-                in_flight[idx] = Some(tx);
+                in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some(tx);
             }
             res = resp_rx.next() => {
-                let resp = res.expect("client response channel is closed");
+                let msg = res.expect("client response channel is closed");
+                if let Message::Response { idx, resp } = msg {
+                    let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
+                    in_flight.push(None);
+                    assert_eq!(in_flight.len(), MAX_IN_FLIGHT_REQUESTS + 1);
+                    match tx_opt {
+                        Some(tx) => tx.send(Ok(resp)).unwrap(),
+                        None => {
+                            console_log!("request {} came in after request canceled", idx)
+                        }
+                    }
+                }
             }
+        }
+        while min_req_idx < next_req_idx && in_flight[min_req_idx].is_none() {
+            min_req_idx += 1;
         }
     }
 }
