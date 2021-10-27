@@ -34,12 +34,13 @@ pub struct PeerTransport<Req, Resp> {
 
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
+    pub node_id: String,
     req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct RequestContext {
-    source_node_id: String,
+    pub source_node_id: String,
 }
 
 #[async_trait]
@@ -112,8 +113,14 @@ where
         }
     }
 
-    pub async fn serve(&'static mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
-        let cx = RequestContext { source_node_id: self.node_id.clone() };
+    pub fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+
+    pub async fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
+        let cx = RequestContext {
+            source_node_id: self.node_id.clone(),
+        };
         while let Some((req, tx)) = self.server_req_rx.next().await {
             let resp = handler.handle(req, cx.clone()).await;
             tx.send(resp).unwrap();
@@ -122,6 +129,7 @@ where
 
     pub fn client(&self) -> Client<Req, Resp> {
         Client {
+            node_id: self.node_id.clone(),
             req_tx: self.client_req_tx.clone(),
         }
     }
@@ -160,7 +168,7 @@ async fn handle_client_requests<Req, Resp>(
 
                 let data = bincode::serialize(&msg).unwrap();
                 if let Err(err) = dc.send_with_u8_array(&data) {
-                    tx.send(Err(Error::Js(err))).unwrap();
+                    tx.send(Err(Error::from(err))).unwrap();
                     continue;
                 }
 
@@ -206,7 +214,7 @@ async fn handle_client_requests<Req, Resp>(
 }
 
 impl<Req, Resp> Client<Req, Resp> {
-    pub async fn rpc(&mut self, req: Req) -> Result<Resp, Error> {
+    pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.req_tx.send((req, resp_tx)).await.unwrap();
 
@@ -233,21 +241,24 @@ impl<Req, Resp> Debug for PeerTransport<Req, Resp> {
 
 #[derive(Debug)]
 pub enum Error {
-    Js(JsValue),
+    Js(String),
     RequestTimeout,
     TooManyInFlightRequests,
+}
+
+impl From<JsValue> for Error {
+    fn from(err: JsValue) -> Self {
+        match err.as_string() {
+            Some(err) => Error::Js(format!("JavaScript error: {}", err)),
+            None => Error::Js(format!("JavaScript error: {:?}", err)),
+        }
+    }
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            Error::Js(err) => {
-                if err.is_string() {
-                    write!(f, "JavaScript error: {}", err.as_string().unwrap())
-                } else {
-                    write!(f, "JavaScript error: {:?}", err)
-                }
-            }
+            Error::Js(err) => write!(f, "{}", err),
             Error::RequestTimeout => write!(f, "request timeout"),
             Error::TooManyInFlightRequests => write!(f, "too many in-flight requests"),
         }

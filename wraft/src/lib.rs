@@ -31,7 +31,7 @@ pub async fn start() {
         ev.prevent_default();
         hide_start_form();
         spawn_local(async move {
-            let mut raft = Raft::new(hn.clone(), get_session_key());
+            let mut raft = Raft::new(hn.clone(), get_session_key(), 3);
             raft.run().await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
