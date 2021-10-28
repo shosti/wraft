@@ -638,6 +638,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "futures",
+ "http",
  "serde",
  "tokio",
  "tokio-tungstenite",

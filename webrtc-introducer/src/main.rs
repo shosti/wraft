@@ -8,14 +8,31 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::broadcast::{channel, Sender};
 use tokio::sync::mpsc;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite;
+use tungstenite::handshake::server;
 use webrtc_introducer_types::{Command, Session};
 
 #[derive(Clone, Default)]
 struct Channels {
     messages: Arc<RwLock<HashMap<String, Sender<Command>>>>,
     online: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+}
+
+struct Headers {}
+
+impl server::Callback for Headers {
+    fn on_request(
+        self,
+        _request: &server::Request,
+        mut response: server::Response,
+    ) -> Result<server::Response, server::ErrorResponse> {
+        response.headers_mut().insert(
+            http::header::CONTENT_SECURITY_POLICY,
+            "default-src '*';".parse().unwrap(),
+        );
+        Ok(response)
+    }
 }
 
 impl Channels {
@@ -96,7 +113,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Error> {
-    let conn = accept_async(socket).await?;
+    let cb = Headers {};
+    let conn = accept_hdr_async(socket, cb).await?;
     let (mut send, mut recv) = conn.split();
     let (join_tx, mut join_rx) = mpsc::channel::<(String, String)>(1);
     let (left_tx, mut left_rx) = mpsc::channel::<()>(1);
