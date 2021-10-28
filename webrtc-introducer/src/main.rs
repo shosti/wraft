@@ -29,7 +29,7 @@ impl server::Callback for Headers {
     ) -> Result<server::Response, server::ErrorResponse> {
         response.headers_mut().insert(
             http::header::CONTENT_SECURITY_POLICY,
-            "default-src '*';".parse().unwrap(),
+            "default-src *".parse().unwrap(),
         );
         Ok(response)
     }
