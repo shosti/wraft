@@ -1,5 +1,10 @@
+use futures::channel::mpsc::{channel, Receiver};
+use futures::StreamExt;
+use futures::task::{Context, Poll};
+use futures::Stream;
 use js_sys::{Function, Promise};
 use std::convert::TryInto;
+use std::pin::Pin;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -47,4 +52,53 @@ pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
     };
     let promise = Promise::new(&mut cb);
     wasm_bindgen_futures::JsFuture::from(promise).await
+}
+
+pub struct Interval {
+    rx: Receiver<()>,
+    interval_id: i32,
+    _cb: Closure<dyn FnMut()>,
+}
+
+impl Interval {
+    pub fn new(d: Duration) -> Self {
+        let (mut tx, rx) = channel(5);
+
+        let cb = Closure::wrap(Box::new(move || {
+            tx.try_send(()).unwrap();
+        }) as Box<dyn FnMut()>);
+        let interval_id = window()
+            .expect("no global window")
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                d.as_millis().try_into().unwrap(),
+            )
+            .unwrap();
+
+        Self {
+            interval_id,
+            rx,
+            _cb: cb,
+        }
+    }
+}
+
+impl Drop for Interval {
+    fn drop(&mut self) {
+        window()
+            .expect("no global window")
+            .clear_interval_with_handle(self.interval_id);
+    }
+}
+
+impl Stream for Interval {
+    type Item = ();
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.rx.poll_next_unpin(cx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.rx.size_hint()
+    }
 }
