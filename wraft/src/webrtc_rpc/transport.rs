@@ -207,7 +207,7 @@ async fn handle_client_requests<Req, Resp>(
                 }
             }
         }
-        while min_req_idx < next_req_idx && in_flight[min_req_idx].is_none() {
+        while min_req_idx < next_req_idx && in_flight[min_req_idx % MAX_IN_FLIGHT_REQUESTS].is_none() {
             min_req_idx += 1;
         }
     }
