@@ -125,7 +125,7 @@ impl Raft {
                     }
                 }
                 console_log!("Sent ping!");
-                sleep(Duration::from_secs(3)).await.unwrap();
+                sleep(Duration::from_secs(3)).await;
             }
         }
     }

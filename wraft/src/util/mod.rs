@@ -1,7 +1,8 @@
 use futures::channel::mpsc::{channel, Receiver};
-use futures::StreamExt;
+use futures::stream::FusedStream;
 use futures::task::{Context, Poll};
 use futures::Stream;
+use futures::StreamExt;
 use js_sys::{Function, Promise};
 use std::convert::TryInto;
 use std::pin::Pin;
@@ -9,6 +10,9 @@ use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::window;
+use wasm_bindgen_futures::JsFuture;
+use futures::{Future, FutureExt};
+use futures::future::Fuse;
 
 #[wasm_bindgen]
 extern "C" {
@@ -32,7 +36,7 @@ pub fn set_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
+pub async fn sleep(d: Duration) -> () {
     // Keep reference to callback closure to prevent it from getting prematurely
     // dropped.
     let mut _closure: Option<Closure<dyn Fn()>> = None;
@@ -51,7 +55,11 @@ pub async fn sleep(d: Duration) -> Result<JsValue, JsValue> {
         _closure = Some(c);
     };
     let promise = Promise::new(&mut cb);
-    wasm_bindgen_futures::JsFuture::from(promise).await
+    JsFuture::from(promise).await.unwrap();
+}
+
+pub fn sleep_fused(d: Duration) -> Pin<Box<Fuse<impl Future>>> {
+    Box::pin(sleep(d).fuse())
 }
 
 pub struct Interval {
@@ -100,5 +108,11 @@ impl Stream for Interval {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.rx.size_hint()
+    }
+}
+
+impl FusedStream for Interval {
+    fn is_terminated(&self) -> bool {
+        self.rx.is_terminated()
     }
 }

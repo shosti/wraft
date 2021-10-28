@@ -2,14 +2,17 @@ pub mod raft;
 pub mod util;
 mod webrtc_rpc;
 
+use crate::util::{sleep_fused, Interval};
 use futures::prelude::*;
+use futures::select;
 use raft::Raft;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Document, Event, HtmlButtonElement, HtmlElement, HtmlInputElement, Window};
+use web_sys::{Document, Event, HtmlButtonElement, HtmlElement, Window};
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
@@ -44,9 +47,19 @@ pub async fn start() {
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
 
-    let forever = future::pending();
-    let () = forever.await;
-    unreachable!();
+    let mut interval = Interval::new(Duration::from_millis(100));
+    let mut timeout = sleep_fused(Duration::from_secs(5));
+    loop {
+        select! {
+            _ = interval.next() => {
+                console_log!("YO");
+            }
+            _ = timeout => {
+                break;
+            }
+        }
+    }
+    console_log!("DONE");
 }
 
 fn generate_session_key() -> String {
@@ -57,14 +70,14 @@ fn generate_session_key() -> String {
         .collect()
 }
 
-fn get_session_key() -> String {
-    let elem = get_document()
-        .get_element_by_id("session-key")
-        .expect("session-key input not found");
-    elem.dyn_ref::<HtmlInputElement>()
-        .expect("session-key should be an input element")
-        .value()
-}
+// fn get_session_key() -> String {
+//     let elem = get_document()
+//         .get_element_by_id("session-key")
+//         .expect("session-key input not found");
+//     elem.dyn_ref::<HtmlInputElement>()
+//         .expect("session-key should be an input element")
+//         .value()
+// }
 
 fn hide_start_form() {
     let elem = get_document()

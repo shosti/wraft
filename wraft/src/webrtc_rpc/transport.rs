@@ -207,7 +207,7 @@ async fn handle_client_requests<Req, Resp>(
 
                 let mut tx = timeout_tx.clone();
                 spawn_local(async move {
-                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await.unwrap();
+                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
                     tx.send(idx).await.unwrap();
                 });
             }
