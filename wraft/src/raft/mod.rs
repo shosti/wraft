@@ -1,7 +1,7 @@
 use crate::console_log;
 use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
-use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
+use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler, Error};
 use async_trait::async_trait;
 use futures::channel::mpsc::channel;
 use futures::prelude::*;
@@ -111,9 +111,15 @@ impl Raft {
                 }
             }
             for client in clients.iter_mut() {
-                console_log!("Sending ping to {}", client.node_id);
+                console_log!("Sending ping to {}", client.node_id());
                 match client.call(RPCRequest::Ping).await {
                     Ok(_) => (),
+                    Err(Error::Disconnected) => {
+                        let node_id = client.node_id();
+                        console_log!("Removing client for {}", node_id);
+                        let mut clients = self.state.peer_clients.lock().unwrap();
+                        clients.remove(&node_id);
+                    }
                     Err(err) => {
                         console_log!("Got error: {}", err);
                     }

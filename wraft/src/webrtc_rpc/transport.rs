@@ -7,6 +7,7 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -23,18 +24,28 @@ enum Message<Req, Resp> {
     Response { idx: usize, resp: Resp },
 }
 
+#[derive(Clone, Debug)]
+pub enum Status {
+    Connected,
+    Closed,
+}
+
 pub struct PeerTransport<Req, Resp> {
     node_id: String,
     data_channel: RtcDataChannel,
+    status: Arc<RwLock<Status>>,
     client_req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
     server_req_rx: Receiver<(Req, oneshot::Sender<Resp>)>,
     _connection: RtcPeerConnection,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
+    _onclose_cb: Closure<dyn FnMut()>,
+    _onerror_cb: Closure<dyn FnMut()>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
-    pub node_id: String,
+    node_id: String,
+    status: Arc<RwLock<Status>>,
     req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
 }
 
@@ -103,13 +114,31 @@ where
         }) as Box<dyn FnMut(MessageEvent)>);
         data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
+        let status = Arc::new(RwLock::new(Status::Connected));
+        let s = status.clone();
+        let nid = node_id.clone();
+        let onclose_cb = Closure::wrap(Box::new(move || {
+            console_log!("lost data channel for {}", nid);
+            let mut status = s.write().unwrap();
+            *status = Status::Closed;
+        }) as Box<dyn FnMut()>);
+        data_channel.set_onclose(Some(onclose_cb.as_ref().unchecked_ref()));
+
+        let onerror_cb = Closure::wrap(Box::new(move || {
+            console_log!("GOT ONERROR!!!");
+        }) as Box<dyn FnMut()>);
+        data_channel.set_onerror(Some(onerror_cb.as_ref().unchecked_ref()));
+
         Self {
+            status,
             node_id,
             data_channel,
             client_req_tx,
             server_req_rx,
             _connection: connection,
             _message_cb: cb,
+            _onclose_cb: onclose_cb,
+            _onerror_cb: onerror_cb,
         }
     }
 
@@ -129,6 +158,7 @@ where
 
     pub fn client(&self) -> Client<Req, Resp> {
         Client {
+            status: self.status.clone(),
             node_id: self.node_id.clone(),
             req_tx: self.client_req_tx.clone(),
         }
@@ -207,7 +237,9 @@ async fn handle_client_requests<Req, Resp>(
                 }
             }
         }
-        while min_req_idx < next_req_idx && in_flight[min_req_idx % MAX_IN_FLIGHT_REQUESTS].is_none() {
+        while min_req_idx < next_req_idx
+            && in_flight[min_req_idx % MAX_IN_FLIGHT_REQUESTS].is_none()
+        {
             min_req_idx += 1;
         }
     }
@@ -215,11 +247,24 @@ async fn handle_client_requests<Req, Resp>(
 
 impl<Req, Resp> Client<Req, Resp> {
     pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
+        if let Status::Closed = self.get_status() {
+            return Err(Error::Disconnected);
+        }
         let (resp_tx, resp_rx) = oneshot::channel();
         self.req_tx.send((req, resp_tx)).await.unwrap();
 
         resp_rx.await.unwrap()
     }
+
+    pub fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+
+    pub fn get_status(&self) -> Status {
+        let s = self.status.read().unwrap();
+        s.clone()
+    }
+
 }
 
 impl<Req, Resp> Drop for PeerTransport<Req, Resp> {
@@ -244,6 +289,7 @@ pub enum Error {
     Js(String),
     RequestTimeout,
     TooManyInFlightRequests,
+    Disconnected,
 }
 
 impl From<JsValue> for Error {
@@ -261,6 +307,7 @@ impl std::fmt::Display for Error {
             Error::Js(err) => write!(f, "{}", err),
             Error::RequestTimeout => write!(f, "request timeout"),
             Error::TooManyInFlightRequests => write!(f, "too many in-flight requests"),
+            Error::Disconnected => write!(f, "data channel has been disconnected"),
         }
     }
 }
