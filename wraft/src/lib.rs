@@ -1,9 +1,11 @@
+pub mod raft;
 pub mod util;
 mod webrtc_rpc;
-pub mod raft;
 
 use futures::prelude::*;
 use raft::Raft;
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -27,12 +29,17 @@ pub async fn start() {
         .expect("#start-button should be a button element");
     let hn_start = hostname.clone();
     let start = Closure::wrap(Box::new(move |ev: Event| {
-        let hn = hn_start.clone();
         ev.prevent_default();
+
+        let content_elem = document.get_element_by_id("content").unwrap();
+        let content = content_elem.dyn_ref::<HtmlElement>().unwrap();
+        let hn = hn_start.clone();
+        let session_key = generate_session_key();
+        content.set_inner_html(format!("<h2>Session key: {}</h2>", session_key).as_str());
         hide_start_form();
         spawn_local(async move {
-            let mut raft = Raft::new(hn.clone(), get_session_key(), 3);
-            raft.run().await.unwrap();
+            let mut _raft = Raft::new(hn.clone(), session_key, 3);
+            // raft.run().await.unwrap();
         });
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
@@ -40,6 +47,14 @@ pub async fn start() {
     let forever = future::pending();
     let () = forever.await;
     unreachable!();
+}
+
+fn generate_session_key() -> String {
+    thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(20)
+        .map(char::from)
+        .collect()
 }
 
 fn get_session_key() -> String {

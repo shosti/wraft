@@ -21,6 +21,7 @@ webrtc-introducer-types = { path = "../webrtc-introducer-types" }
 getrandom = { version = "0.2", features = ["js"] }
 wee_alloc = "0.4"
 async-trait = "0.1"
+rand = "0.8"
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
