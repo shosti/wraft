@@ -13,8 +13,8 @@ use persistence::PersistentState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -120,19 +120,20 @@ impl Raft {
     // }
 
     async fn run(&self) {
-        loop {
-            for (node_id, client) in self.state.peer_clients.iter() {
-                console_log!("Sending ping to {}", node_id);
-                match client.call(RPCRequest::Ping).await {
-                    Ok(_) => (),
-                    Err(err) => {
-                        console_log!("Got error: {}", err);
-                    }
-                }
-                console_log!("Sent ping!");
-                sleep(Duration::from_secs(3)).await;
-            }
-        }
+        future::pending::<()>().await;
+        // loop {
+        //     for (node_id, client) in self.state.peer_clients.iter() {
+        //         console_log!("Sending ping to {}", node_id);
+        //         match client.call(RPCRequest::Ping).await {
+        //             Ok(_) => (),
+        //             Err(err) => {
+        //                 console_log!("Got error: {}", err);
+        //             }
+        //         }
+        //         console_log!("Sent ping!");
+        //         sleep(Duration::from_secs(3)).await;
+        //     }
+        // }
     }
 }
 

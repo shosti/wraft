@@ -45,6 +45,8 @@ features = [
   "IdbOpenDbRequest",
   "Location",
   "MessageEvent",
+  "IdbTransaction",
+  "IdbTransactionMode",
   "RtcDataChannel",
   "RtcDataChannelEvent",
   "RtcDataChannelState",

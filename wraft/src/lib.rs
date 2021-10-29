@@ -40,7 +40,7 @@ pub async fn start() {
         let hn = hn_start.clone();
         let session_key = generate_session_key();
 
-        spawn_local(run_raft(hn, session_key, 3));
+        spawn_local(run_raft(hn, session_key, 1));
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
 
