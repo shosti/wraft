@@ -2,9 +2,8 @@ pub mod raft;
 pub mod util;
 mod webrtc_rpc;
 
-use crate::util::{sleep_fused, Interval};
+use crate::util::Interval;
 use futures::prelude::*;
-use futures::select;
 use raft::Raft;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -12,7 +11,11 @@ use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Document, Event, HtmlButtonElement, HtmlElement, Window};
+use web_sys::{
+    Document, Event, HtmlButtonElement, HtmlElement, HtmlFormElement, HtmlInputElement, Window,
+};
+
+const SESSION_KEY_LEN: usize = 20;
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
@@ -34,32 +37,57 @@ pub async fn start() {
     let start = Closure::wrap(Box::new(move |ev: Event| {
         ev.prevent_default();
 
-        let content_elem = document.get_element_by_id("content").unwrap();
-        let content = content_elem.dyn_ref::<HtmlElement>().unwrap();
         let hn = hn_start.clone();
         let session_key = generate_session_key();
-        content.set_inner_html(format!("<h2>Session key: {}</h2>", session_key).as_str());
-        hide_start_form();
-        spawn_local(async move {
-            let mut _raft = Raft::new(hn.clone(), session_key, 3);
-            // raft.run().await.unwrap();
-        });
+
+        spawn_local(run_raft(hn, session_key, 3));
     }) as Box<dyn FnMut(Event)>);
     start_button.set_onclick(Some(start.as_ref().unchecked_ref()));
 
-    let mut interval = Interval::new(Duration::from_millis(100));
-    let mut timeout = sleep_fused(Duration::from_secs(5));
-    loop {
-        select! {
-            _ = interval.next() => {
-                console_log!("YO");
-            }
-            _ = timeout => {
-                break;
-            }
+    let join_elem = document
+        .get_element_by_id("join-form")
+        .expect("No join form found");
+    let join_form = join_elem
+        .dyn_ref::<HtmlFormElement>()
+        .expect("#join-form should be a form");
+    let hn_join = hostname.clone();
+    let join = Closure::wrap(Box::new(move |ev: Event| {
+        ev.prevent_default();
+
+        let hn = hn_join.clone();
+        let session_key = get_join_session_key();
+        if session_key.len() != SESSION_KEY_LEN {
+            panic!("BAD SESSION KEY");
         }
+
+        spawn_local(run_raft(hn, session_key, 3));
+    }) as Box<dyn FnMut(Event)>);
+    join_form.set_onsubmit(Some(join.as_ref().unchecked_ref()));
+
+    future::pending::<()>().await;
+    unreachable!();
+}
+
+async fn run_raft(node_id: String, session_key: String, cluster_size: usize) {
+    let document = get_document();
+    let session_key_elem = document
+        .get_element_by_id("session-key")
+        .expect("#session-key not found");
+    let sk = session_key_elem.dyn_ref::<HtmlElement>().unwrap();
+    sk.set_inner_html(format!("<h2>Session key: {}</h2>", session_key).as_str());
+    hide_start_form();
+
+    let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
+    let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
+
+    let raft = Raft::new(node_id, session_key, cluster_size);
+
+    let mut interval = Interval::new(Duration::from_secs(1));
+
+    while let Some(()) = interval.next().await {
+        let content = format!("<pre>{:#?}</pre>", raft);
+        raft_content.set_inner_html(&content);
     }
-    console_log!("DONE");
 }
 
 fn generate_session_key() -> String {
@@ -70,21 +98,21 @@ fn generate_session_key() -> String {
         .collect()
 }
 
-// fn get_session_key() -> String {
-//     let elem = get_document()
-//         .get_element_by_id("session-key")
-//         .expect("session-key input not found");
-//     elem.dyn_ref::<HtmlInputElement>()
-//         .expect("session-key should be an input element")
-//         .value()
-// }
+fn get_join_session_key() -> String {
+    let elem = get_document()
+        .get_element_by_id("join-session-key")
+        .expect("join-session-key input not found");
+    elem.dyn_ref::<HtmlInputElement>()
+        .expect("join-session-key should be an input element")
+        .value()
+}
 
 fn hide_start_form() {
     let elem = get_document()
-        .get_element_by_id("start-form")
-        .expect("start-form not found");
+        .get_element_by_id("start")
+        .expect("start section not found");
     elem.dyn_ref::<HtmlElement>()
-        .expect("start-form should be an HTML element")
+        .expect("start section should be an HTML element")
         .set_hidden(true);
 }
 

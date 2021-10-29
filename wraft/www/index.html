@@ -8,18 +8,23 @@
     <noscript>This page contains webassembly and javascript content, please enable javascript in your browser.</noscript>
     <script src="./bootstrap.js"></script>
     <h1>WRaft</h1>
-    <p>
-    <button type="button" id="start-button">Start new cluster</button>
-    </p>
-    <p>
-    <form id="join-form" action="#">
-      <div>
-        <label for="session-key">Join existing cluster</label>
-      </div>
-      <input type="text" id="join-session-key" name="join-session-key" />
-      <input type="submit" value="Join" />
-    </form>
-    </p>
-    <div id="content"></div>
+    <div id="start">
+      <p>
+        <button type="button" id="start-button">Start new cluster</button>
+      </p>
+      <p>
+        <form id="join-form" action="#">
+          <div>
+            <label for="session-key">Join existing cluster</label>
+          </div>
+          <input type="text" id="join-session-key" name="join-session-key" />
+          <input type="submit" value="Join" />
+        </form>
+      </p>
+    </div>
+    <div id="content">
+      <div id="session-key"></div>
+      <div id="raft"></div>
+    </div>
   </body>
 </html>

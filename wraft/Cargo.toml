@@ -37,6 +37,7 @@ features = [
   "Element",
   "Event",
   "HtmlButtonElement",
+  "HtmlFormElement",
   "HtmlInputElement",
   "Location",
   "MessageEvent",

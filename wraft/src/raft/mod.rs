@@ -1,7 +1,7 @@
 use crate::console_log;
 use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
-use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler, Error};
+use crate::webrtc_rpc::transport::{Client, Error, RequestContext, RequestHandler};
 use async_trait::async_trait;
 use futures::channel::mpsc::channel;
 use futures::prelude::*;
@@ -11,17 +11,18 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Raft {
     state: Arc<RaftState>,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 enum RaftStatus {
     Waiting,
     Running,
 }
 
+#[derive(Debug)]
 struct RaftState {
     status: RwLock<RaftStatus>,
     node_id: String,
@@ -42,7 +43,7 @@ enum RPCResponse {
 
 impl Raft {
     pub fn new(node_id: String, session_key: String, cluster_size: usize) -> Self {
-        Self {
+        let raft = Self {
             state: Arc::new(RaftState {
                 status: RwLock::new(RaftStatus::Waiting),
                 node_id,
@@ -50,45 +51,44 @@ impl Raft {
                 cluster_size,
                 peer_clients: Mutex::new(HashMap::new()),
             }),
-        }
-    }
+        };
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        console_log!("RUNNING!");
         let (peers_tx, mut peers_rx) = channel(10);
 
-        let node_id = self.state.node_id.clone();
-        let session_key = self.state.session_key.clone();
+        let node_id = raft.state.node_id.clone();
+        let session_key = raft.state.session_key.clone();
         spawn_local(async move {
             introduce::<RPCRequest, RPCResponse>(&node_id, &session_key, peers_tx)
                 .await
                 .unwrap();
         });
 
-        while let Some(mut peer) = peers_rx.next().await {
-            console_log!("Got client: {}", peer.node_id());
-            {
-                let peer_id = peer.node_id();
-                let mut clients = self.state.peer_clients.lock().unwrap();
-                clients.insert(peer_id, peer.client());
-            };
-            let r = self.clone();
-            spawn_local(async move {
-                peer.serve(r).await;
-            });
-            let clients = self.state.peer_clients.lock().unwrap();
-            if self.status_is(RaftStatus::Waiting) && clients.len() >= (self.state.cluster_size - 1)
-            {
-                console_log!("FIRING UP!!!");
-                self.update_status(RaftStatus::Running);
-                let r = self.clone();
+        let r = raft.clone();
+        spawn_local(async move {
+            while let Some(mut peer) = peers_rx.next().await {
+                console_log!("Got client: {}", peer.node_id());
+                {
+                    let peer_id = peer.node_id();
+                    let mut clients = r.state.peer_clients.lock().unwrap();
+                    clients.insert(peer_id, peer.client());
+                };
+                let r2 = r.clone();
                 spawn_local(async move {
-                    r.start().await;
-                })
+                    peer.serve(r2).await;
+                });
+                let clients = r.state.peer_clients.lock().unwrap();
+                if r.status_is(RaftStatus::Waiting) && clients.len() >= (r.state.cluster_size - 1) {
+                    console_log!("FIRING UP!!!");
+                    r.update_status(RaftStatus::Running);
+                    let r2 = r.clone();
+                    spawn_local(async move {
+                        r2.start().await;
+                    })
+                }
             }
-        }
+        });
 
-        unreachable!()
+        raft
     }
 
     fn status_is(&self, status: RaftStatus) -> bool {
