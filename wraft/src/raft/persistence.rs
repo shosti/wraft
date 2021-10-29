@@ -2,8 +2,8 @@ use crate::console_log;
 use crate::raft::errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
-use futures::{future, select, SinkExt, StreamExt};
-use js_sys::{Function, Number, Promise, Uint8Array};
+use futures::{select, SinkExt, StreamExt};
+use js_sys::{Function, Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -32,14 +32,14 @@ enum DBResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct LogEntry {
-    cmd: Cmd,
-    term: u64,
-    position: LogPosition,
+pub struct LogEntry {
+    pub cmd: LogCmd,
+    pub term: u64,
+    pub position: LogPosition,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub enum Cmd {
+pub enum LogCmd {
     Set { key: String, data: Vec<u8> },
     Delete { key: String },
 }
@@ -54,6 +54,30 @@ impl PersistentState {
         let tx = run_db(session_id).await?;
 
         Ok(Self { tx })
+    }
+
+    pub async fn append(&self, entry: LogEntry) -> Result<(), Error> {
+        let mut tx = self.tx.clone();
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let req = DBRequest::Add(entry);
+        tx.send((req, resp_tx)).await.unwrap();
+
+        match resp_rx.await.unwrap()? {
+            DBResponse::Ack => Ok(()),
+            _ => unreachable!(),
+        }
+    }
+
+    pub async fn get(&self, pos: LogPosition) -> Result<LogEntry, Error> {
+        let mut tx = self.tx.clone();
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let req = DBRequest::Get(pos);
+        tx.send((req, resp_tx)).await.unwrap();
+
+        match resp_rx.await.unwrap()? {
+            DBResponse::Entry(entry) => Ok(entry),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -149,7 +173,7 @@ async fn add_log_entry(db: IdbDatabase, entry: LogEntry) -> Result<DBResponse, D
     let data = bincode::serialize(&entry)?;
     let buf = Uint8Array::new_with_length(data.len() as u32);
     buf.copy_from(&data);
-    let req = obj_store.add_with_key(&buf, &key)?;
+    obj_store.add_with_key(&buf, &key)?;
 
     let mut p = move |resolve: Function, reject: Function| {
         tx.set_oncomplete(Some(&resolve));
@@ -175,7 +199,8 @@ async fn get_log_entry(db: IdbDatabase, pos: LogPosition) -> Result<DBResponse, 
     };
     JsFuture::from(Promise::new(&mut p)).await?;
     let res = req.result()?;
-    let data = res.dyn_ref::<Uint8Array>()
+    let data = res
+        .dyn_ref::<Uint8Array>()
         .expect("result should be a uint8array")
         .to_vec();
     let entry: LogEntry = bincode::deserialize(&data)?;

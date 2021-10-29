@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::channel;
 use futures::prelude::*;
-use persistence::PersistentState;
+use persistence::{LogCmd, LogEntry, PersistentState};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -120,20 +122,34 @@ impl Raft {
     // }
 
     async fn run(&self) {
-        future::pending::<()>().await;
-        // loop {
-        //     for (node_id, client) in self.state.peer_clients.iter() {
-        //         console_log!("Sending ping to {}", node_id);
-        //         match client.call(RPCRequest::Ping).await {
-        //             Ok(_) => (),
-        //             Err(err) => {
-        //                 console_log!("Got error: {}", err);
-        //             }
-        //         }
-        //         console_log!("Sent ping!");
-        //         sleep(Duration::from_secs(3)).await;
-        //     }
-        // }
+        let mut i = 0;
+        loop {
+            let s: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(5)
+                .map(char::from)
+                .collect();
+            let entry = LogEntry {
+                cmd: LogCmd::Set {
+                    key: format!("foo-{}", i),
+                    data: s.into(),
+                },
+                term: 1,
+                position: i,
+            };
+            console_log!("Appending entry {:?}", entry);
+            self.state.persistent.append(entry).await.unwrap();
+
+            sleep(Duration::from_secs(1)).await;
+
+            console_log!("Getting entry...");
+            let e = self.state.persistent.get(i).await.unwrap();
+            console_log!("Got: {:?}", e);
+
+            sleep(Duration::from_secs(1)).await;
+
+            i += 1;
+        }
     }
 }
 
