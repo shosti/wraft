@@ -54,7 +54,11 @@ impl Raft {
         let mut peers = Vec::new();
         let mut peer_clients = HashMap::new();
 
-        spawn_local(introduce::<RPCRequest, RPCResponse>(node_id.clone(), session_key.clone(), peers_tx));
+        spawn_local(introduce::<RPCRequest, RPCResponse>(
+            node_id.clone(),
+            session_key.clone(),
+            peers_tx,
+        ));
 
         let target_size = cluster_size - 1;
         while peers.len() < target_size {
