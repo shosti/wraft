@@ -18,6 +18,9 @@ const CHANNEL_SIZE: usize = 1024;
 const MAX_IN_FLIGHT_REQUESTS: usize = 1024;
 const REQUEST_TIMEOUT_MILLIS: u64 = 1000;
 
+type RequestSender<Req, Resp> = Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>;
+type RequestReceiver<Req, Resp> = Receiver<(Req, oneshot::Sender<Resp>)>;
+
 #[derive(Serialize, Deserialize)]
 enum Message<Req, Resp> {
     Request { idx: usize, req: Req },
@@ -34,8 +37,8 @@ pub struct PeerTransport<Req, Resp> {
     node_id: String,
     data_channel: RtcDataChannel,
     status: Arc<RwLock<Status>>,
-    client_req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
-    server_req_rx: Receiver<(Req, oneshot::Sender<Resp>)>,
+    client_req_tx: RequestSender<Req, Resp>,
+    server_req_rx: RequestReceiver<Req, Resp>,
     _connection: RtcPeerConnection,
     _message_cb: Closure<dyn FnMut(MessageEvent)>,
     _onclose_cb: Closure<dyn FnMut()>,
@@ -45,7 +48,7 @@ pub struct PeerTransport<Req, Resp> {
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
     status: Arc<RwLock<Status>>,
-    req_tx: Arc<Mutex<Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>>>,
+    req_tx: Arc<Mutex<RequestSender<Req, Resp>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,7 +175,8 @@ async fn handle_client_requests<Req, Resp>(
     Req: Serialize + Debug + 'static,
     Resp: Serialize + Debug + 'static,
 {
-    let mut in_flight: Vec<Option<(usize, oneshot::Sender<Result<Resp, Error>>)>> =
+    type InFlightRequest<Resp> = (usize, oneshot::Sender<Result<Resp, Error>>);
+    let mut in_flight: Vec<Option<InFlightRequest<Resp>>> =
         (0..MAX_IN_FLIGHT_REQUESTS).map(|_| None).collect();
     let mut min_req_idx: usize = 0;
     let mut next_req_idx: usize = 0;

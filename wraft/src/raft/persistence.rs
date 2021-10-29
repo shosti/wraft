@@ -85,7 +85,7 @@ async fn run_db(session_id: &str) -> Result<CmdSender, Error> {
         _ = ready_rx.next() => Ok(client_tx),
         res = err_rx.next() => {
             let err = Error::DatabaseError(res.unwrap().as_string().unwrap());
-            Err(err.into())
+            Err(err)
         }
     }
 }

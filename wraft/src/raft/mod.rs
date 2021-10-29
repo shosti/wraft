@@ -146,7 +146,7 @@ impl RequestHandler<RPCRequest, RPCResponse> for Raft {
 
 impl Debug for Raft {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "Raft (id: {})\n", self.state.node_id)?;
+        write!(f, "Raft (id: {})", self.state.node_id)?;
         Ok(())
     }
 }

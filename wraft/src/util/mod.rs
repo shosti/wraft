@@ -1,18 +1,18 @@
 use futures::channel::mpsc::{channel, Receiver};
+use futures::future::Fuse;
 use futures::stream::FusedStream;
 use futures::task::{Context, Poll};
 use futures::Stream;
 use futures::StreamExt;
+use futures::{Future, FutureExt};
 use js_sys::{Function, Promise};
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::window;
 use wasm_bindgen_futures::JsFuture;
-use futures::{Future, FutureExt};
-use futures::future::Fuse;
+use web_sys::window;
 
 #[wasm_bindgen]
 extern "C" {
@@ -36,7 +36,7 @@ pub fn set_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-pub async fn sleep(d: Duration) -> () {
+pub async fn sleep(d: Duration) {
     // Keep reference to callback closure to prevent it from getting prematurely
     // dropped.
     let mut _closure: Option<Closure<dyn Fn()>> = None;
