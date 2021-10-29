@@ -122,6 +122,10 @@ impl Raft {
     // }
 
     async fn run(&self) {
+        let window = web_sys::window().expect("should have a window in this context");
+        let performance = window
+            .performance()
+            .expect("performance should be available");
         let mut i = 0;
         loop {
             let s: String = thread_rng()
@@ -138,13 +142,18 @@ impl Raft {
                 position: i,
             };
             console_log!("Appending entry {:?}", entry);
+            let t0 = performance.now();
             self.state.persistent.append(entry).await.unwrap();
+            let t1 = performance.now();
+            console_log!("Took {:.1} millis", t1-t0);
 
             sleep(Duration::from_secs(1)).await;
 
             console_log!("Getting entry...");
+            let t2 = performance.now();
             let e = self.state.persistent.get(i).await.unwrap();
-            console_log!("Got: {:?}", e);
+            let t3 = performance.now();
+            console_log!("Got: {:?} (took {:.1} millis)", e, t3-t2);
 
             sleep(Duration::from_secs(1)).await;
 

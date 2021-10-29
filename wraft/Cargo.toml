@@ -47,6 +47,8 @@ features = [
   "MessageEvent",
   "IdbTransaction",
   "IdbTransactionMode",
+  "Performance",
+  "DomException",
   "RtcDataChannel",
   "RtcDataChannelEvent",
   "RtcDataChannelState",

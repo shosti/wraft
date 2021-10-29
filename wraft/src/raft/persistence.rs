@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
-use web_sys::{IdbDatabase, IdbTransactionMode};
+use web_sys::{DomException, Event, IdbDatabase, IdbTransactionMode};
 
 type RequestSender = Sender<(DBRequest, oneshot::Sender<Result<DBResponse, DBError>>)>;
 type RequestReceiver = Receiver<(DBRequest, oneshot::Sender<Result<DBResponse, DBError>>)>;
@@ -173,13 +173,15 @@ async fn add_log_entry(db: IdbDatabase, entry: LogEntry) -> Result<DBResponse, D
     let data = bincode::serialize(&entry)?;
     let buf = Uint8Array::new_with_length(data.len() as u32);
     buf.copy_from(&data);
-    obj_store.add_with_key(&buf, &key)?;
+    let req = obj_store.put_with_key(&buf, &key)?;
 
     let mut p = move |resolve: Function, reject: Function| {
         tx.set_oncomplete(Some(&resolve));
         tx.set_onerror(Some(&reject));
     };
-    JsFuture::from(Promise::new(&mut p)).await?;
+    if let Err(_) = JsFuture::from(Promise::new(&mut p)).await {
+        return Err(req.error().unwrap().unwrap().into());
+    }
 
     Ok(DBResponse::Ack)
 }
@@ -197,7 +199,10 @@ async fn get_log_entry(db: IdbDatabase, pos: LogPosition) -> Result<DBResponse, 
         r.set_onsuccess(Some(&resolve));
         r.set_onerror(Some(&reject));
     };
-    JsFuture::from(Promise::new(&mut p)).await?;
+
+    if let Err(_) = JsFuture::from(Promise::new(&mut p)).await {
+        return Err(req.error().unwrap().unwrap().into());
+    }
     let res = req.result()?;
     let data = res
         .dyn_ref::<Uint8Array>()
@@ -218,8 +223,25 @@ impl From<JsValue> for DBError {
     fn from(err: JsValue) -> Self {
         let msg = match err.as_string() {
             Some(e) => e,
-            None => format!("database error: {:?}", err),
+            None => {
+                if let Some(ev) = err.dyn_ref::<Event>() {
+                    format!(
+                        "error on event with type {} and target {:?}",
+                        ev.type_(),
+                        ev.target()
+                    )
+                } else {
+                    format!("database error: {:?}", err)
+                }
+            }
         };
+        DBError::Js(msg)
+    }
+}
+
+impl From<DomException> for DBError {
+    fn from(err: DomException) -> Self {
+        let msg = format!("{}: {}", err.name(), err.message());
         DBError::Js(msg)
     }
 }
