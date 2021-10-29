@@ -4,12 +4,15 @@ use futures::channel::oneshot;
 use futures::{future, select, SinkExt, StreamExt};
 use js_sys::{Function, Promise};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::IdbDatabase;
 
 type CmdSender = Sender<(Cmd, oneshot::Sender<Result<(), Error>>)>;
 type CmdReceiver = Receiver<(Cmd, oneshot::Sender<Result<(), Error>>)>;
+
+const LOG_OBJECT_STORE: &str = "log_entries";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Cmd {}
@@ -57,6 +60,25 @@ async fn run_db(session_id: &str) -> Result<CmdSender, Error> {
         let req = factory.open(&db_name).unwrap();
         let r = req.clone();
         let mut p = move |resolve: Function, reject: Function| {
+            let r2 = r.clone();
+            let rej = reject.clone();
+            let upgrade_db = Closure::wrap(Box::new(move || {
+                let res = r2.result().unwrap();
+                let db = res
+                    .dyn_ref::<IdbDatabase>()
+                    .expect("should have gotten a database from database request");
+
+                match db.create_object_store(LOG_OBJECT_STORE) {
+                    Ok(_) => (),
+                    Err(err) => {
+                        rej.call1(&JsValue::UNDEFINED, &err).unwrap();
+                    }
+                }
+            }) as Box<dyn FnMut()>);
+            r.set_onupgradeneeded(Some(upgrade_db.as_ref().unchecked_ref()));
+            // Memory leak, but there should really only be one DB client per Raft so probably not a big deal.
+            upgrade_db.forget();
+
             r.set_onsuccess(Some(&resolve));
             r.set_onerror(Some(&reject));
         };
@@ -68,7 +90,7 @@ async fn run_db(session_id: &str) -> Result<CmdSender, Error> {
                     .result()
                     .unwrap()
                     .dyn_ref::<IdbDatabase>()
-                    .expect("should have gotten a datbase from database request")
+                    .expect("should have gotten a database from database request")
                     .clone();
                 ready_tx.send(()).await.unwrap();
             }
