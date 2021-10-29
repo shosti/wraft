@@ -9,14 +9,13 @@ use transport::PeerTransport;
 pub async fn introduce<Req, Resp>(
     id: String,
     session_id: String,
-    peers: Sender<PeerTransport<Req, Resp>>,
-) -> Result<(), error::Error>
+    peers_tx: Sender<PeerTransport<Req, Resp>>,
+)
 where
     Req: Serialize + DeserializeOwned + Debug + 'static,
     Resp: Serialize + DeserializeOwned + Debug + 'static,
 {
-    let client = introduction::initiate::<Req, Resp>(&id, &session_id, peers).await?;
-    Ok(client)
+    introduction::initiate::<Req, Resp>(&id, &session_id, peers_tx).await.unwrap();
 }
 
 pub mod error {

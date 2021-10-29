@@ -74,10 +74,11 @@ where
         let (client_resp_tx, client_resp_rx) = channel(CHANNEL_SIZE);
         let (server_req_tx, server_req_rx) = channel(CHANNEL_SIZE);
 
-        let req_dc = data_channel.clone();
-        spawn_local(async move {
-            handle_client_requests(client_req_rx, client_resp_rx, req_dc).await;
-        });
+        spawn_local(handle_client_requests(
+            client_req_rx,
+            client_resp_rx,
+            data_channel.clone(),
+        ));
         let msg_dc = data_channel.clone();
         let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
             let mut client_tx = client_resp_tx.clone();
