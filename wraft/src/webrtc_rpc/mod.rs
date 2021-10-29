@@ -7,15 +7,15 @@ use std::fmt::Debug;
 use transport::PeerTransport;
 
 pub async fn introduce<Req, Resp>(
-    id: &str,
-    session_id: &str,
+    id: String,
+    session_id: String,
     peers: Sender<PeerTransport<Req, Resp>>,
 ) -> Result<(), error::Error>
 where
     Req: Serialize + DeserializeOwned + Debug + 'static,
     Resp: Serialize + DeserializeOwned + Debug + 'static,
 {
-    let client = introduction::initiate::<Req, Resp>(id, session_id, peers).await?;
+    let client = introduction::initiate::<Req, Resp>(&id, &session_id, peers).await?;
     Ok(client)
 }
 

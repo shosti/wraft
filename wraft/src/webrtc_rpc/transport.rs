@@ -7,7 +7,7 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -44,9 +44,8 @@ pub struct PeerTransport<Req, Resp> {
 
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
-    node_id: String,
     status: Arc<RwLock<Status>>,
-    req_tx: Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>,
+    req_tx: Arc<Mutex<Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,8 +158,7 @@ where
     pub fn client(&self) -> Client<Req, Resp> {
         Client {
             status: self.status.clone(),
-            node_id: self.node_id.clone(),
-            req_tx: self.client_req_tx.clone(),
+            req_tx: Arc::new(Mutex::new(self.client_req_tx.clone())),
         }
     }
 }
@@ -246,25 +244,23 @@ async fn handle_client_requests<Req, Resp>(
 }
 
 impl<Req, Resp> Client<Req, Resp> {
-    pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
+    pub async fn call(&self, req: Req) -> Result<Resp, Error> {
         if let Status::Closed = self.get_status() {
             return Err(Error::Disconnected);
         }
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.req_tx.send((req, resp_tx)).await.unwrap();
+        {
+            let mut tx = self.req_tx.lock().unwrap();
+            tx.try_send((req, resp_tx)).unwrap();
+        }
 
         resp_rx.await.unwrap()
-    }
-
-    pub fn node_id(&self) -> String {
-        self.node_id.clone()
     }
 
     pub fn get_status(&self) -> Status {
         let s = self.status.read().unwrap();
         s.clone()
     }
-
 }
 
 impl<Req, Resp> Drop for PeerTransport<Req, Resp> {

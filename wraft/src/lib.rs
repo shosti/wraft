@@ -80,7 +80,7 @@ async fn run_raft(node_id: String, session_key: String, cluster_size: usize) {
     let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
     let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
 
-    let raft = Raft::new(node_id, session_key, cluster_size);
+    let raft = Raft::initiate(node_id, session_key, cluster_size).await.unwrap();
 
     let mut interval = Interval::new(Duration::from_secs(1));
 
