@@ -145,7 +145,7 @@ impl Raft {
             let t0 = performance.now();
             self.state.persistent.append(entry).await.unwrap();
             let t1 = performance.now();
-            console_log!("Took {:.1} millis", t1-t0);
+            console_log!("Took {:.8} millis", t1-t0);
 
             sleep(Duration::from_secs(1)).await;
 
@@ -153,7 +153,7 @@ impl Raft {
             let t2 = performance.now();
             let e = self.state.persistent.get(i).await.unwrap();
             let t3 = performance.now();
-            console_log!("Got: {:?} (took {:.1} millis)", e, t3-t2);
+            console_log!("Got: {:?} (took {:.8} millis)", e, t3-t2);
 
             sleep(Duration::from_secs(1)).await;
 
