@@ -1,5 +1,6 @@
 use crate::raft::errors::Error;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use web_sys::Storage;
 
 pub type LogPosition = u64;
@@ -8,7 +9,6 @@ pub type LogPosition = u64;
 pub struct LogEntry {
     pub cmd: LogCmd,
     pub term: u64,
-    pub position: LogPosition,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -17,20 +17,29 @@ pub enum LogCmd {
     Delete { key: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PersistentState {
     session_key: String,
+    last_log_pos: AtomicU64,
 }
 
 impl PersistentState {
     pub fn new(session_key: &str) -> Self {
-        Self {
+        let state = Self {
             session_key: session_key.to_string(),
+            last_log_pos: AtomicU64::new(0),
+        };
+
+        if state.get(state.current_term_key().as_str()).is_none() {
+            state.set_current_term(0);
         }
+
+        state
     }
 
     pub fn append_log(&self, entry: LogEntry) -> Result<(), Error> {
-        let key = self.log_key(entry.position);
+        let last_log = self.last_log_pos.fetch_add(1, Ordering::SeqCst);
+        let key = self.log_key(last_log + 1);
         let data = serde_json::to_string(&entry)?;
         self.storage().set_item(&key, &data).unwrap();
         Ok(())
@@ -45,7 +54,10 @@ impl PersistentState {
 
     pub fn current_term(&self) -> u64 {
         let key = self.current_term_key();
-        self.get(&key).parse::<u64>().unwrap()
+        self.get(&key)
+            .expect("current term not set")
+            .parse::<u64>()
+            .unwrap()
     }
 
     pub fn set_current_term(&self, term: u64) {
@@ -54,14 +66,18 @@ impl PersistentState {
         self.set(&key, &val);
     }
 
-    pub fn voted_for(&self) -> String {
+    pub fn voted_for(&self) -> Option<String> {
         let key = self.voted_for_key();
         self.get(&key)
     }
 
-    pub fn set_voted_for(&self, val: &str) {
+    pub fn set_voted_for(&self, val: Option<&str>) {
         let key = self.voted_for_key();
-        self.set(&key, val)
+
+        match val {
+            Some(ref val) => self.set(&key, val),
+            None => self.storage().remove_item(&key).unwrap(),
+        }
     }
 
     fn storage(&self) -> Storage {
@@ -69,11 +85,10 @@ impl PersistentState {
         window.local_storage().expect("no local storage").unwrap()
     }
 
-    fn get(&self, key: &str) -> String {
+    fn get(&self, key: &str) -> Option<String> {
         self.storage()
             .get_item(key)
             .unwrap()
-            .expect(format!("no local storage entry for {}", key).as_str())
     }
 
     fn set(&self, key: &str, val: &str) {

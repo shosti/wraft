@@ -139,7 +139,6 @@ impl Raft {
                     data: s.into(),
                 },
                 term: 1,
-                position: i,
             };
             console_log!("Appending entry {:?}", entry);
             let t0 = performance.now();
