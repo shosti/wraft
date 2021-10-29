@@ -3,7 +3,7 @@ use crate::raft::errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::{future, select, SinkExt, StreamExt};
-use js_sys::{Function, Promise};
+use js_sys::{Function, Promise, Uint8Array, Number};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -17,9 +17,12 @@ type RequestReceiver = Receiver<(DBRequest, oneshot::Sender<Result<DBResponse, D
 const DB_VERSION: u32 = 1;
 const LOG_OBJECT_STORE: &str = "log_entries";
 
+type LogPosition = u64;
+
 #[derive(Debug)]
 enum DBRequest {
-    Apply(LogEntry),
+    Add(LogEntry),
+    Get(LogPosition),
 }
 
 #[derive(Debug)]
@@ -31,7 +34,7 @@ enum DBResponse {
 struct LogEntry {
     cmd: Cmd,
     term: u64,
-    position: u64,
+    position: LogPosition,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -138,17 +141,32 @@ async fn run_db(session_id: &str) -> Result<RequestSender, DBError> {
 async fn handle_db_requests(db: IdbDatabase, mut rx: RequestReceiver) {
     while let Some((req, tx)) = rx.next().await {
         match req {
-            DBRequest::Apply(entry) => {
-                let res = apply_log_entry(db.clone(), entry).await;
+            DBRequest::Add(entry) => {
+                let res = add_log_entry(db.clone(), entry).await;
                 tx.send(res).unwrap();
+            }
+            DBRequest::Get(key) => {
             }
         }
     }
 }
 
-async fn apply_log_entry(db: IdbDatabase, entry: LogEntry) -> Result<DBResponse, DBError> {
+async fn add_log_entry(db: IdbDatabase, entry: LogEntry) -> Result<DBResponse, DBError> {
     let tx = db.transaction_with_str_and_mode(LOG_OBJECT_STORE, IdbTransactionMode::Readwrite)?;
-    let obj_store = tx.object_store(LOG_OBJECT_STORE).unwrap();
+    let obj_store = tx.object_store(LOG_OBJECT_STORE)?;
+
+    let key: JsValue = entry.position.to_string().into();
+    let data = bincode::serialize(&entry).unwrap();
+    let buf = Uint8Array::new_with_length(data.len() as u32);
+    buf.copy_from(&data);
+    let req = obj_store.add_with_key(&buf, &key)?;
+
+    let mut p = move |resolve: Function, reject: Function| {
+        tx.set_oncomplete(Some(&resolve));
+        tx.set_onerror(Some(&reject));
+    };
+    JsFuture::from(Promise::new(&mut p)).await?;
+
     Ok(DBResponse::Ack)
 }
 
