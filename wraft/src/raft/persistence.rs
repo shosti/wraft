@@ -1,5 +1,6 @@
 use crate::raft::errors::Error;
 use serde::{Deserialize, Serialize};
+use web_sys::Storage;
 
 pub type LogPosition = u64;
 
@@ -18,31 +19,76 @@ pub enum LogCmd {
 
 #[derive(Debug, Clone)]
 pub struct PersistentState {
-    session_id: String,
+    session_key: String,
 }
 
 impl PersistentState {
-    pub async fn initialize(session_id: &str) -> Result<Self, Error> {
-        Ok(Self {
-            session_id: session_id.to_string(),
-        })
+    pub fn new(session_key: &str) -> Self {
+        Self {
+            session_key: session_key.to_string(),
+        }
     }
 
-    pub async fn append(&self, entry: LogEntry) -> Result<(), Error> {
-        let key = format!("log-{}-{}", self.session_id, entry.position);
-        let window = web_sys::window().expect("no global window");
-        let storage = window.local_storage().unwrap().unwrap();
+    pub fn append_log(&self, entry: LogEntry) -> Result<(), Error> {
+        let key = self.log_key(entry.position);
         let data = serde_json::to_string(&entry)?;
-        storage.set_item(&key, &data).unwrap();
+        self.storage().set_item(&key, &data).unwrap();
         Ok(())
     }
 
-    pub async fn get(&self, pos: LogPosition) -> Result<LogEntry, Error> {
-        let key = format!("log-{}-{}", self.session_id, pos);
-        let window = web_sys::window().expect("no global window");
-        let storage = window.local_storage().unwrap().unwrap();
-        let data = storage.get_item(&key).unwrap().unwrap();
+    pub fn get_log(&self, pos: LogPosition) -> Result<LogEntry, Error> {
+        let key = self.log_key(pos);
+        let data = self.storage().get_item(&key).unwrap().unwrap();
         let entry: LogEntry = serde_json::from_str(&data)?;
         Ok(entry)
+    }
+
+    pub fn current_term(&self) -> u64 {
+        let key = self.current_term_key();
+        self.get(&key).parse::<u64>().unwrap()
+    }
+
+    pub fn set_current_term(&self, term: u64) {
+        let key = self.current_term_key();
+        let val = term.to_string();
+        self.set(&key, &val);
+    }
+
+    pub fn voted_for(&self) -> String {
+        let key = self.voted_for_key();
+        self.get(&key)
+    }
+
+    pub fn set_voted_for(&self, val: &str) {
+        let key = self.voted_for_key();
+        self.set(&key, val)
+    }
+
+    fn storage(&self) -> Storage {
+        let window = web_sys::window().expect("no global window");
+        window.local_storage().expect("no local storage").unwrap()
+    }
+
+    fn get(&self, key: &str) -> String {
+        self.storage()
+            .get_item(key)
+            .unwrap()
+            .expect(format!("no local storage entry for {}", key).as_str())
+    }
+
+    fn set(&self, key: &str, val: &str) {
+        self.storage().set_item(key, val).unwrap();
+    }
+
+    fn log_key(&self, pos: LogPosition) -> String {
+        format!("log-{}-{}", self.session_key, pos)
+    }
+
+    fn current_term_key(&self) -> String {
+        format!("current-term-{}", self.session_key)
+    }
+
+    fn voted_for_key(&self) -> String {
+        format!("voted-for-{}", self.session_key)
     }
 }

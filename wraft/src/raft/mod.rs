@@ -82,7 +82,7 @@ impl Raft {
             peers.push(peer);
         }
 
-        let persistent = PersistentState::initialize(&node_id).await?;
+        let persistent = PersistentState::new(&session_key);
         console_log!("FIRING UP!!!");
         let raft = Self {
             state: Arc::new(RaftState {
@@ -143,7 +143,7 @@ impl Raft {
             };
             console_log!("Appending entry {:?}", entry);
             let t0 = performance.now();
-            self.state.persistent.append(entry).await.unwrap();
+            self.state.persistent.append_log(entry).unwrap();
             let t1 = performance.now();
             console_log!("Took {:.8} millis", t1-t0);
 
@@ -151,7 +151,7 @@ impl Raft {
 
             console_log!("Getting entry...");
             let t2 = performance.now();
-            let e = self.state.persistent.get(i).await.unwrap();
+            let e = self.state.persistent.get_log(i).unwrap();
             let t3 = performance.now();
             console_log!("Got: {:?} (took {:.8} millis)", e, t3-t2);
 
