@@ -172,7 +172,7 @@ async fn handle_client_requests<Req, Resp>(
     Req: Serialize + Debug + 'static,
     Resp: Serialize + Debug + 'static,
 {
-    let mut in_flight: Vec<Option<oneshot::Sender<Result<Resp, Error>>>> =
+    let mut in_flight: Vec<Option<(usize, oneshot::Sender<Result<Resp, Error>>)>> =
         (0..MAX_IN_FLIGHT_REQUESTS).map(|_| None).collect();
     let mut min_req_idx: usize = 0;
     let mut next_req_idx: usize = 0;
@@ -201,7 +201,7 @@ async fn handle_client_requests<Req, Resp>(
                 }
 
                 next_req_idx += 1;
-                in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some(tx);
+                in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some((idx, tx));
 
                 let mut tx = timeout_tx.clone();
                 spawn_local(async move {
@@ -217,7 +217,16 @@ async fn handle_client_requests<Req, Resp>(
                         .expect("out of bounds for in-flight requests")
                         .take();
                     match tx_opt {
-                        Some(tx) => tx.send(Ok(resp)).unwrap(),
+                        Some((i, tx)) if i == idx => tx.send(Ok(resp)).unwrap(),
+                        Some((i, tx)) => {
+                            console_log!(
+                                "got unexpected response for leftover timed-out request (in-flight ID is {}, response ID is {})",
+                                i,
+                                idx,
+                            );
+                            in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some((i, tx))
+
+                        }
                         None => {
                             console_log!("request {} came in after request canceled", idx)
                         }
@@ -229,7 +238,8 @@ async fn handle_client_requests<Req, Resp>(
                 let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
                 in_flight.push(None);
 
-                if let Some(tx) = tx_opt {
+                if let Some((i, tx)) = tx_opt {
+                    assert_eq!(i, idx, "unexpected response sender in timeout");
                     console_log!("request {} timed out", idx);
                     tx.send(Err(Error::RequestTimeout)).unwrap();
                 }
