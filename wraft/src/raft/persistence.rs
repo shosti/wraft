@@ -3,7 +3,7 @@ use crate::raft::errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::{future, select, SinkExt, StreamExt};
-use js_sys::{Function, Promise, Uint8Array, Number};
+use js_sys::{Function, Number, Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -28,6 +28,7 @@ enum DBRequest {
 #[derive(Debug)]
 enum DBResponse {
     Ack,
+    Entry(LogEntry),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -43,25 +44,12 @@ pub enum Cmd {
     Delete { key: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PersistentState {
-    db: DBClient,
-}
-
-impl PersistentState {
-    pub async fn initialize(session_id: &str) -> Result<Self, Error> {
-        let db = DBClient::initialize(session_id).await?;
-
-        Ok(Self { db })
-    }
-}
-
-#[derive(Debug)]
-struct DBClient {
     tx: RequestSender,
 }
 
-impl DBClient {
+impl PersistentState {
     pub async fn initialize(session_id: &str) -> Result<Self, Error> {
         let tx = run_db(session_id).await?;
 
@@ -145,7 +133,9 @@ async fn handle_db_requests(db: IdbDatabase, mut rx: RequestReceiver) {
                 let res = add_log_entry(db.clone(), entry).await;
                 tx.send(res).unwrap();
             }
-            DBRequest::Get(key) => {
+            DBRequest::Get(pos) => {
+                let res = get_log_entry(db.clone(), pos).await;
+                tx.send(res).unwrap();
             }
         }
     }
@@ -156,7 +146,7 @@ async fn add_log_entry(db: IdbDatabase, entry: LogEntry) -> Result<DBResponse, D
     let obj_store = tx.object_store(LOG_OBJECT_STORE)?;
 
     let key: JsValue = entry.position.to_string().into();
-    let data = bincode::serialize(&entry).unwrap();
+    let data = bincode::serialize(&entry)?;
     let buf = Uint8Array::new_with_length(data.len() as u32);
     buf.copy_from(&data);
     let req = obj_store.add_with_key(&buf, &key)?;
@@ -170,17 +160,47 @@ async fn add_log_entry(db: IdbDatabase, entry: LogEntry) -> Result<DBResponse, D
     Ok(DBResponse::Ack)
 }
 
+// This is mostly for testing, probably will want to go with cursors eventually
+async fn get_log_entry(db: IdbDatabase, pos: LogPosition) -> Result<DBResponse, DBError> {
+    let tx = db.transaction_with_str_and_mode(LOG_OBJECT_STORE, IdbTransactionMode::Readonly)?;
+    let obj_store = tx.object_store(LOG_OBJECT_STORE)?;
+
+    let key: JsValue = pos.to_string().into();
+    let req = obj_store.get(&key)?;
+
+    let r = req.clone();
+    let mut p = move |resolve: Function, reject: Function| {
+        r.set_onsuccess(Some(&resolve));
+        r.set_onerror(Some(&reject));
+    };
+    JsFuture::from(Promise::new(&mut p)).await?;
+    let res = req.result()?;
+    let data = res.dyn_ref::<Uint8Array>()
+        .expect("result should be a uint8array")
+        .to_vec();
+    let entry: LogEntry = bincode::deserialize(&data)?;
+
+    Ok(DBResponse::Entry(entry))
+}
+
 #[derive(Debug)]
-pub struct DBError {
-    msg: String,
+pub enum DBError {
+    Js(String),
+    Serialization(Box<bincode::ErrorKind>),
 }
 
 impl From<JsValue> for DBError {
-    fn from(err: JsValue) -> DBError {
+    fn from(err: JsValue) -> Self {
         let msg = match err.as_string() {
             Some(e) => e,
             None => format!("database error: {:?}", err),
         };
-        DBError { msg }
+        DBError::Js(msg)
+    }
+}
+
+impl From<Box<bincode::ErrorKind>> for DBError {
+    fn from(err: Box<bincode::ErrorKind>) -> Self {
+        DBError::Serialization(err)
     }
 }
