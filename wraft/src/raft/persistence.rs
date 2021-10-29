@@ -45,7 +45,7 @@ impl PersistentState {
         Ok(())
     }
 
-    pub fn get_log(&self, pos: LogPosition) -> Result<LogEntry, Error> {
+    fn get_log(&self, pos: LogPosition) -> Result<LogEntry, Error> {
         let key = self.log_key(pos);
         let data = self.storage().get_item(&key).unwrap().unwrap();
         let entry: LogEntry = serde_json::from_str(&data)?;
