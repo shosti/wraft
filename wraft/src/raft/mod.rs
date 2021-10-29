@@ -1,4 +1,5 @@
 pub mod errors;
+mod persistence;
 
 use crate::console_log;
 use crate::util::sleep;
@@ -8,10 +9,12 @@ use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::channel;
 use futures::prelude::*;
+use persistence::PersistentState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -32,6 +35,13 @@ struct RaftState {
     session_key: String,
     cluster_size: usize,
     peer_clients: HashMap<String, Client<RPCRequest, RPCResponse>>,
+
+    // Volatile state
+    commit_index: AtomicU64,
+    last_applied: AtomicU64,
+
+    // Persistent state
+    persistent: PersistentState,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -62,8 +72,7 @@ impl Raft {
 
         let target_size = cluster_size - 1;
         while peers.len() < target_size {
-            // TODO: error handling
-            let peer = peers_rx.next().await.unwrap();
+            let peer = peers_rx.next().await.ok_or(Error::NotEnoughPeers())?;
             console_log!("Got client: {}", peer.node_id());
 
             let peer_id = peer.node_id().clone();
@@ -71,14 +80,18 @@ impl Raft {
             peers.push(peer);
         }
 
+        let persistent = PersistentState::initialize(&node_id).await?;
         console_log!("FIRING UP!!!");
         let raft = Self {
             state: Arc::new(RaftState {
                 status: RwLock::new(RaftStatus::Follower),
+                persistent,
                 node_id,
                 session_key,
                 cluster_size,
                 peer_clients,
+                commit_index: 0.into(),
+                last_applied: 0.into(),
             }),
         };
 
