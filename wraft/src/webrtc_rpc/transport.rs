@@ -172,9 +172,8 @@ async fn handle_client_requests<Req, Resp>(
     Req: Serialize + Debug + 'static,
     Resp: Serialize + Debug + 'static,
 {
-    // Add extra element at the end for swap_remove dance
     let mut in_flight: Vec<Option<oneshot::Sender<Result<Resp, Error>>>> =
-        (0..(MAX_IN_FLIGHT_REQUESTS + 1)).map(|_| None).collect();
+        (0..MAX_IN_FLIGHT_REQUESTS).map(|_| None).collect();
     let mut min_req_idx: usize = 0;
     let mut next_req_idx: usize = 0;
 
@@ -213,9 +212,10 @@ async fn handle_client_requests<Req, Resp>(
             res = resp_rx.next() => {
                 let msg = res.expect("client response channel is closed");
                 if let Message::Response { idx, resp } = msg {
-                    let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
-                    in_flight.push(None);
-                    assert_eq!(in_flight.len(), MAX_IN_FLIGHT_REQUESTS + 1);
+                    let tx_opt = in_flight
+                        .get_mut(idx % MAX_IN_FLIGHT_REQUESTS)
+                        .expect("out of bounds for in-flight requests")
+                        .take();
                     match tx_opt {
                         Some(tx) => tx.send(Ok(resp)).unwrap(),
                         None => {
@@ -228,7 +228,6 @@ async fn handle_client_requests<Req, Resp>(
                 let idx = res.expect("timeout channel closed");
                 let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
                 in_flight.push(None);
-                assert_eq!(in_flight.len(), MAX_IN_FLIGHT_REQUESTS + 1);
 
                 if let Some(tx) = tx_opt {
                     console_log!("request {} timed out", idx);
