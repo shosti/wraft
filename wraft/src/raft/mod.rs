@@ -8,7 +8,6 @@ use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
 use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
-use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -185,15 +184,10 @@ impl Raft {
     async fn be_follower(&self) {
         console_log!("BEING A FOLLOWER");
         let mut hb_rx = self.get_heartbeat();
-        let (timeout_tx, mut timeout) = oneshot::channel::<()>();
-        spawn_local(async move {
-            sleep(election_timeout()).await;
-            let _ = timeout_tx.send(());
-        });
 
         loop {
             select! {
-                _ = timeout => {
+                _ = sleep(election_timeout()) => {
                     console_log!("Calling election!");
                     self.set_status(RaftStatus::Candidate);
                     return;
@@ -227,11 +221,7 @@ impl Raft {
             .map(|(_k, client)| client.call(req.clone()))
             .collect::<FuturesUnordered<_>>();
 
-        let (timeout_tx, mut timeout) = oneshot::channel::<()>();
-        spawn_local(async move {
-            sleep(election_timeout()).await;
-            let _ = timeout_tx.send(());
-        });
+        let mut timeout = sleep(election_timeout());
         loop {
             select! {
                 res = vote_calls.next() =>  {

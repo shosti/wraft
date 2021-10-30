@@ -90,8 +90,8 @@ pub fn get_window() -> Window {
     window().expect("no global window")
 }
 
-pub async fn sleep(d: Duration) {
-    Sleep::new(d).await
+pub fn sleep(d: Duration) -> Sleep {
+    Sleep::new(d)
 }
 
 pub struct Interval {
