@@ -3,13 +3,14 @@ use futures::channel::oneshot;
 use futures::future::FusedFuture;
 use futures::stream::FusedStream;
 use futures::task::{Context, Poll};
-use futures::StreamExt;
 use futures::{Future, FutureExt, Stream};
+use futures::{SinkExt, StreamExt};
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{window, Window};
 
 #[wasm_bindgen]
@@ -102,10 +103,13 @@ pub struct Interval {
 
 impl Interval {
     pub fn new(d: Duration) -> Self {
-        let (mut tx, rx) = channel(5);
+        let (tx, rx) = channel(5);
 
         let cb = Closure::wrap(Box::new(move || {
-            tx.try_send(()).unwrap();
+            let mut t = tx.clone();
+            spawn_local(async move {
+                t.send(()).await.unwrap();
+            });
         }) as Box<dyn FnMut()>);
         let interval_id = window()
             .expect("no global window")

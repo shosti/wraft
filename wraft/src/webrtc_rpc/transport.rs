@@ -7,7 +7,7 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -48,7 +48,7 @@ pub struct PeerTransport<Req, Resp> {
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
     status: Arc<RwLock<Status>>,
-    req_tx: Arc<Mutex<RequestSender<Req, Resp>>>,
+    req_tx: RequestSender<Req, Resp>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +162,7 @@ where
     pub fn client(&self) -> Client<Req, Resp> {
         Client {
             status: self.status.clone(),
-            req_tx: Arc::new(Mutex::new(self.client_req_tx.clone())),
+            req_tx: self.client_req_tx.clone(),
         }
     }
 }
@@ -268,10 +268,8 @@ impl<Req, Resp> Client<Req, Resp> {
             return Err(Error::Disconnected);
         }
         let (resp_tx, resp_rx) = oneshot::channel();
-        {
-            let mut tx = self.req_tx.lock().unwrap();
-            tx.try_send((req, resp_tx)).unwrap();
-        }
+        let mut tx = self.req_tx.clone();
+        tx.send((req, resp_tx)).await.unwrap();
 
         resp_rx.await.unwrap()
     }
