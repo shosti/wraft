@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::select;
+use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use persistence::{LogEntry, PersistentState};
 use rand::{thread_rng, Rng};
@@ -297,7 +298,7 @@ impl Raft {
         }
     }
 
-    fn handle_request_vote(&self, req: RequestVoteRequest) -> RequestVoteResponse {
+    async fn handle_request_vote(&self, req: RequestVoteRequest) -> RequestVoteResponse {
         console_log!("Responding to vote request for {}", req.candidate);
         self.update_term(req.term);
 
@@ -323,14 +324,23 @@ impl Raft {
         }
     }
 
-    fn handle_append_entries(
-        &self,
-        _req: AppendEntriesRequest,
-        _cx: RequestContext,
-    ) -> AppendEntriesResponse {
+    async fn send_heartbeat(&self, leader: &str) {
+        let hb_tx = self.state.heartbeat_tx.lock().unwrap().clone();
+        match hb_tx {
+            None => (),
+            Some(mut tx) => tx.send(leader.to_string()).await.unwrap(),
+        }
+    }
+
+    async fn handle_append_entries(&self, req: AppendEntriesRequest) -> AppendEntriesResponse {
+        self.update_term(req.term);
+        self.send_heartbeat(&req.leader).await;
+
+        let term = self.state.persistent.current_term();
+
         AppendEntriesResponse {
-            term: 0,
-            success: false,
+            term,
+            success: true,
         }
     }
 }
@@ -346,10 +356,10 @@ impl RequestHandler<RPCRequest, RPCResponse> for Raft {
         console_log!("Got {:?} from {}", req, cx.source_node_id);
         match req {
             RPCRequest::AppendEntries(req) => {
-                RPCResponse::AppendEntries(self.handle_append_entries(req, cx))
+                RPCResponse::AppendEntries(self.handle_append_entries(req).await)
             }
             RPCRequest::RequestVote(req) => {
-                RPCResponse::RequestVote(self.handle_request_vote(req))
+                RPCResponse::RequestVote(self.handle_request_vote(req).await)
             }
         }
     }
