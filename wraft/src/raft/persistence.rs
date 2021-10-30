@@ -36,6 +36,17 @@ impl PersistentState {
         state
     }
 
+    pub fn last_log_index(&self) -> LogPosition {
+        self.last_log_pos.load(Ordering::SeqCst)
+    }
+
+    pub fn last_log_term(&self) -> TermIndex {
+        match self.get_log(self.last_log_index()) {
+            Some(entry) => entry.term,
+            None => 0,
+        }
+    }
+
     pub fn _append_log(&self, entry: LogEntry) -> Result<(), Error> {
         let last_log = self.last_log_pos.fetch_add(1, Ordering::SeqCst);
         let key = self.log_key(last_log + 1);
@@ -44,11 +55,15 @@ impl PersistentState {
         Ok(())
     }
 
-    fn _get_log(&self, pos: LogPosition) -> Result<LogEntry, Error> {
+    fn get_log(&self, pos: LogPosition) -> Option<LogEntry> {
         let key = self.log_key(pos);
-        let data = self.storage().get_item(&key).unwrap().unwrap();
-        let entry: LogEntry = serde_json::from_str(&data)?;
-        Ok(entry)
+        match self.storage().get_item(&key).unwrap() {
+            Some(data) => {
+                let entry: LogEntry = serde_json::from_str(&data).unwrap();
+                Some(entry)
+            }
+            None => None,
+        }
     }
 
     pub fn current_term(&self) -> TermIndex {
@@ -70,7 +85,7 @@ impl PersistentState {
         self.get(&key)
     }
 
-    pub fn _set_voted_for(&self, val: Option<&str>) {
+    pub fn set_voted_for(&self, val: Option<&str>) {
         let key = self.voted_for_key();
 
         match val {

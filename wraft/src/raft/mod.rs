@@ -2,7 +2,7 @@ pub mod errors;
 mod persistence;
 
 use crate::console_log;
-use crate::util::sleep_fused;
+use crate::util::{sleep, sleep_until};
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wasm_bindgen_futures::spawn_local;
 
 pub type LogPosition = u64;
@@ -86,7 +86,7 @@ struct RequestVoteRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct RequestVoteResponse {
     term: TermIndex,
-    success: bool,
+    vote_granted: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -166,6 +166,10 @@ impl Raft {
         s.clone()
     }
 
+    fn votes_required(&self) -> usize {
+        (self.state.cluster_size / 2) + 1
+    }
+
     async fn run(&self) {
         loop {
             match self.get_status() {
@@ -182,7 +186,7 @@ impl Raft {
 
         loop {
             select! {
-                _ = sleep_fused(election_timeout()) => {
+                _ = sleep(election_timeout()) => {
                     console_log!("Calling election!");
                     self.set_status(RaftStatus::Candidate);
                     return;
@@ -195,7 +199,60 @@ impl Raft {
         }
     }
 
-    async fn be_candidate(&self) {}
+    async fn be_candidate(&self) {
+        println!("BEING A CANDIDATE!");
+        let mut hb_rx = self.get_heartbeat();
+        let persistent = &self.state.persistent;
+        persistent.set_voted_for(Some(&self.state.node_id));
+        persistent.set_current_term(persistent.current_term() + 1);
+
+        let req = RPCRequest::RequestVote(RequestVoteRequest {
+            term: persistent.current_term(),
+            candidate: self.state.node_id.to_string(),
+            last_log_index: persistent.last_log_index(),
+            last_log_term: persistent.last_log_term(),
+        });
+        let mut votes = 1; // Voted for self
+        let mut vote_calls = self
+            .state
+            .peer_clients
+            .iter()
+            .map(|(_k, client)| client.call(req.clone()))
+            .collect::<FuturesUnordered<_>>();
+
+        let election_deadline = Instant::now() + election_timeout();
+        loop {
+            select! {
+                res = vote_calls.next() =>  {
+                    if let Some(Ok(RPCResponse::RequestVote(resp))) = res {
+                        if resp.vote_granted {
+                            votes += 1;
+                        }
+                    }
+                    console_log!("VOTES: {:#?}", votes);
+                    if votes >= self.votes_required() {
+                        console_log!("I WIN!!!");
+                        self.set_status(RaftStatus::Leader);
+                        break;
+                    }
+                }
+                res = hb_rx.next() => {
+                    let leader = res.unwrap();
+                    println!("LEADER: {:#?}", leader);
+                    println!("I LOSE!");
+                    // We got a heartbeat, so we're a follower now
+                    self.set_status(RaftStatus::Follower { leader: Some(leader) });
+                    break;
+                }
+                _ = sleep_until(election_deadline) => {
+                    println!("ELECTION TIMED OUT");
+                    // Election timed out, try again
+                    break;
+                }
+            }
+        }
+        persistent.set_voted_for(None);
+    }
 
     async fn be_leader(&self) {
         console_log!("BEING A LEADER");
@@ -234,7 +291,7 @@ impl Raft {
     ) -> RequestVoteResponse {
         RequestVoteResponse {
             term: 0,
-            success: false,
+            vote_granted: false,
         }
     }
 
