@@ -201,7 +201,7 @@ impl Raft {
     }
 
     async fn be_candidate(&self) {
-        println!("BEING A CANDIDATE!");
+        console_log!("BEING A CANDIDATE!");
         let mut hb_rx = self.get_heartbeat();
         let persistent = &self.state.persistent;
         persistent.set_voted_for(Some(&self.state.node_id));
@@ -239,14 +239,14 @@ impl Raft {
                 }
                 res = hb_rx.next() => {
                     let leader = res.unwrap();
-                    println!("LEADER: {:#?}", leader);
-                    println!("I LOSE!");
+                    console_log!("LEADER: {:#?}", leader);
+                    console_log!("I LOSE!");
                     // We got a heartbeat, so we're a follower now
                     self.set_status(RaftStatus::Follower { leader: Some(leader) });
                     break;
                 }
                 _ = sleep_until(election_deadline) => {
-                    println!("ELECTION TIMED OUT");
+                    console_log!("ELECTION TIMED OUT");
                     // Election timed out, try again
                     break;
                 }
