@@ -10,6 +10,7 @@ pub enum Error {
     NotEnoughPeers,
     Persistence(serde_json::Error),
     NotLeader,
+    CommandTimeout,
 }
 
 impl From<serde_json::Error> for Error {

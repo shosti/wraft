@@ -29,6 +29,7 @@ type CmdReceiver = Receiver<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
 type CmdSender = Sender<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
 
 const HEARBEAT_INTERVAL_MILLIS: u64 = 50;
+const COMMAND_TIMEOUT_MILLIS: u64 = 500;
 
 #[derive(Clone)]
 pub struct Raft {
@@ -173,7 +174,7 @@ impl Raft {
     }
 
     pub async fn set(&self, key: String, data: Vec<u8>) -> Result<(), Error> {
-        let (resp_tx, resp_rx) = oneshot::channel();
+        let (resp_tx, mut resp_rx) = oneshot::channel();
         let cmd = LogCmd::Set { key, data };
         self.state
             .cmds_tx
@@ -181,7 +182,11 @@ impl Raft {
             .send((cmd, resp_tx))
             .await
             .unwrap();
-        resp_rx.await.unwrap()
+
+        select! {
+            res = resp_rx => res.expect("command channel closed"),
+            _ = sleep(Duration::from_millis(COMMAND_TIMEOUT_MILLIS)) => Err(Error::CommandTimeout),
+        }
     }
 
     fn set_status(&self, status: RaftStatus) {
