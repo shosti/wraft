@@ -230,7 +230,6 @@ impl Raft {
                             votes += 1;
                         }
                     }
-                    console_log!("VOTES: {:#?}", votes);
                     if votes >= self.votes_required() {
                         console_log!("I WIN!!!");
                         self.set_status(RaftStatus::Leader);
@@ -300,7 +299,6 @@ impl Raft {
     }
 
     async fn handle_request_vote(&self, req: RequestVoteRequest) -> RequestVoteResponse {
-        console_log!("Responding to vote request for {}", req.candidate);
         self.update_term(req.term);
 
         let persistent = &self.state.persistent;
@@ -329,9 +327,10 @@ impl Raft {
         let hb_tx = self.state.heartbeat_tx.lock().unwrap().clone();
         match hb_tx {
             None => (),
-            Some(mut tx) => match tx.send(leader.to_string()).await {
-                Ok(()) => (),
-                Err(err) => console_log!("heartbeat channel error: {}", err),
+            Some(mut tx) => {
+                // If the heartbeat fails it's probably because we changed state
+                // or something, so ignore errors.
+                let _ = tx.send(leader.to_string()).await;
             },
         }
     }
@@ -356,8 +355,7 @@ fn election_timeout() -> Duration {
 
 #[async_trait]
 impl RequestHandler<RPCRequest, RPCResponse> for Raft {
-    async fn handle(&self, req: RPCRequest, cx: RequestContext) -> RPCResponse {
-        console_log!("Got {:?} from {}", req, cx.source_node_id);
+    async fn handle(&self, req: RPCRequest, _cx: RequestContext) -> RPCResponse {
         match req {
             RPCRequest::AppendEntries(req) => {
                 RPCResponse::AppendEntries(self.handle_append_entries(req).await)

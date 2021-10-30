@@ -222,12 +222,10 @@ async fn handle_client_requests<Req, Resp>(
                         .take();
                     match tx_opt {
                         Some((i, tx)) if i == idx => {
-                            match tx.send(Ok(resp)) {
-                                Ok(_) => (),
-                                Err(err) => {
-                                    console_log!("client response channel is closed: {:?}", err);
-                                }
-                            }
+                            // Best-effort reply (if the caller is gone then one
+                            // can assume that the request has been canceled or
+                            // something).
+                            let _ = tx.send(Ok(resp));
                         }
                         Some((i, tx)) => {
                             console_log!(
