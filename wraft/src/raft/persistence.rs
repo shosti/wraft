@@ -80,7 +80,7 @@ impl PersistentState {
         self.set(&key, &val);
     }
 
-    pub fn _voted_for(&self) -> Option<String> {
+    pub fn voted_for(&self) -> Option<String> {
         let key = self.voted_for_key();
         self.get(&key)
     }

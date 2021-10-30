@@ -15,7 +15,7 @@ use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use wasm_bindgen_futures::spawn_local;
@@ -284,11 +284,39 @@ impl Raft {
         rx
     }
 
-    fn handle_request_vote(
-        &self,
-        req: RequestVoteRequest,
-        cx: RequestContext,
-    ) -> RequestVoteResponse {
+    fn update_term(&self, term: TermIndex) {
+        let current_term = self.state.persistent.current_term();
+        if current_term < term {
+            self.state.persistent.set_current_term(term);
+            match self.get_status() {
+                RaftStatus::Follower { .. } => (),
+                _ => {
+                    self.set_status(RaftStatus::Follower { leader: None });
+                }
+            }
+        }
+    }
+
+    fn handle_request_vote(&self, req: RequestVoteRequest) -> RequestVoteResponse {
+        console_log!("Responding to vote request for {}", req.candidate);
+        self.update_term(req.term);
+
+        let persistent = &self.state.persistent;
+        let voted_for = persistent.voted_for();
+        let current_term = persistent.current_term();
+        let commit_index = self.state.commit_index.load(Ordering::SeqCst);
+        if req.term >= current_term
+            && (voted_for == None || *voted_for.unwrap() == req.candidate)
+            && req.last_log_index >= commit_index
+        {
+            persistent.set_voted_for(Some(&req.candidate));
+
+            return RequestVoteResponse {
+                term: req.last_log_term,
+                vote_granted: true,
+            };
+        }
+
         RequestVoteResponse {
             term: 0,
             vote_granted: false,
@@ -297,8 +325,8 @@ impl Raft {
 
     fn handle_append_entries(
         &self,
-        req: AppendEntriesRequest,
-        cx: RequestContext,
+        _req: AppendEntriesRequest,
+        _cx: RequestContext,
     ) -> AppendEntriesResponse {
         AppendEntriesResponse {
             term: 0,
@@ -321,7 +349,7 @@ impl RequestHandler<RPCRequest, RPCResponse> for Raft {
                 RPCResponse::AppendEntries(self.handle_append_entries(req, cx))
             }
             RPCRequest::RequestVote(req) => {
-                RPCResponse::RequestVote(self.handle_request_vote(req, cx))
+                RPCResponse::RequestVote(self.handle_request_vote(req))
             }
         }
     }
