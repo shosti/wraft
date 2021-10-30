@@ -1,16 +1,16 @@
 use futures::channel::mpsc::{channel, Receiver};
+use futures::channel::oneshot;
+use futures::future::FusedFuture;
 use futures::stream::FusedStream;
 use futures::task::{Context, Poll};
-use futures::Stream;
 use futures::StreamExt;
-use js_sys::{Function, Promise};
+use futures::{Future, FutureExt, Stream};
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::window;
+use web_sys::{window, Window};
 
 #[wasm_bindgen]
 extern "C" {
@@ -34,26 +34,64 @@ pub fn set_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-pub async fn sleep(d: Duration) {
-    // Keep reference to callback closure to prevent it from getting prematurely
-    // dropped.
-    let mut _closure: Option<Closure<dyn Fn()>> = None;
-    let mut cb = |resolve: Function, _reject: Function| {
-        let c = Closure::wrap(Box::new(move || {
-            resolve.call0(&JsValue::UNDEFINED).unwrap();
-        }) as Box<dyn Fn()>);
+pub struct Sleep {
+    rx: oneshot::Receiver<()>,
+    timeout_handle: i32,
+    _cb: Closure<dyn FnMut()>,
+}
 
-        window()
-            .expect("no global window")
+impl Sleep {
+    pub fn new(d: Duration) -> Self {
+        let (tx, rx) = oneshot::channel::<()>();
+        let _cb = Closure::once(move || {
+            tx.send(()).unwrap();
+        });
+
+        let timeout_handle = get_window()
             .set_timeout_with_callback_and_timeout_and_arguments_0(
-                c.as_ref().unchecked_ref(),
+                _cb.as_ref().unchecked_ref(),
                 d.as_millis().try_into().unwrap(),
             )
             .unwrap();
-        _closure = Some(c);
-    };
-    let promise = Promise::new(&mut cb);
-    JsFuture::from(promise).await.unwrap();
+
+        Self {
+            rx,
+            timeout_handle,
+            _cb,
+        }
+    }
+}
+
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        get_window().clear_timeout_with_handle(self.timeout_handle);
+    }
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.rx.poll_unpin(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(()),
+            Poll::Ready(Err(err)) => panic!("sleep receiver poll failed: {}", err),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl FusedFuture for Sleep {
+    fn is_terminated(&self) -> bool {
+        self.rx.is_terminated()
+    }
+}
+
+pub fn get_window() -> Window {
+    window().expect("no global window")
+}
+
+pub async fn sleep(d: Duration) {
+    Sleep::new(d).await
 }
 
 pub struct Interval {
