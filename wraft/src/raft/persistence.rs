@@ -36,7 +36,7 @@ impl PersistentState {
         state
     }
 
-    pub fn append_log(&self, entry: LogEntry) -> Result<(), Error> {
+    pub fn _append_log(&self, entry: LogEntry) -> Result<(), Error> {
         let last_log = self.last_log_pos.fetch_add(1, Ordering::SeqCst);
         let key = self.log_key(last_log + 1);
         let data = serde_json::to_string(&entry)?;
@@ -44,7 +44,7 @@ impl PersistentState {
         Ok(())
     }
 
-    fn get_log(&self, pos: LogPosition) -> Result<LogEntry, Error> {
+    fn _get_log(&self, pos: LogPosition) -> Result<LogEntry, Error> {
         let key = self.log_key(pos);
         let data = self.storage().get_item(&key).unwrap().unwrap();
         let entry: LogEntry = serde_json::from_str(&data)?;
@@ -65,12 +65,12 @@ impl PersistentState {
         self.set(&key, &val);
     }
 
-    pub fn voted_for(&self) -> Option<String> {
+    pub fn _voted_for(&self) -> Option<String> {
         let key = self.voted_for_key();
         self.get(&key)
     }
 
-    pub fn set_voted_for(&self, val: Option<&str>) {
+    pub fn _set_voted_for(&self, val: Option<&str>) {
         let key = self.voted_for_key();
 
         match val {
