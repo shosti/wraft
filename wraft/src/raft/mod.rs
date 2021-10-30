@@ -55,26 +55,44 @@ struct RaftState {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum RPCRequest {
-    AppendEntries {
-        term: TermIndex,
-        leader: NodeId,
-        prev_log_index: LogPosition,
-        prev_log_term: TermIndex,
-        entries: Vec<LogEntry>,
-        leader_commit: LogPosition,
-    },
-    RequestVote {
-        term: TermIndex,
-        candidate: NodeId,
-        last_log_index: LogPosition,
-        last_log_term: TermIndex,
-    },
+    AppendEntries(AppendEntriesRequest),
+    RequestVote(RequestVoteRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum RPCResponse {
-    AppendEntries { term: TermIndex, success: bool },
-    RequestVote { term: TermIndex, success: bool },
+    AppendEntries(AppendEntriesResponse),
+    RequestVote(RequestVoteResponse),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AppendEntriesRequest {
+    term: TermIndex,
+    leader: NodeId,
+    prev_log_index: LogPosition,
+    prev_log_term: TermIndex,
+    entries: Vec<LogEntry>,
+    leader_commit: LogPosition,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RequestVoteRequest {
+    term: TermIndex,
+    candidate: NodeId,
+    last_log_index: LogPosition,
+    last_log_term: TermIndex,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RequestVoteResponse {
+    term: TermIndex,
+    success: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AppendEntriesResponse {
+    term: TermIndex,
+    success: bool,
 }
 
 impl Raft {
@@ -183,14 +201,14 @@ impl Raft {
         console_log!("BEING A LEADER");
         let term = self.state.persistent.current_term();
         while let RaftStatus::Leader = self.get_status() {
-            let req = RPCRequest::AppendEntries {
+            let req = RPCRequest::AppendEntries(AppendEntriesRequest {
                 term,
                 leader_commit: 0, // TODO: fix
                 prev_log_index: 0,
                 prev_log_term: 0,
                 leader: self.state.node_id.to_string(),
                 entries: Vec::new(),
-            };
+            });
             let mut heartbeat_calls = self
                 .state
                 .peer_clients
@@ -208,6 +226,28 @@ impl Raft {
 
         rx
     }
+
+    fn handle_request_vote(
+        &self,
+        req: RequestVoteRequest,
+        cx: RequestContext,
+    ) -> RequestVoteResponse {
+        RequestVoteResponse {
+            term: 0,
+            success: false,
+        }
+    }
+
+    fn handle_append_entries(
+        &self,
+        req: AppendEntriesRequest,
+        cx: RequestContext,
+    ) -> AppendEntriesResponse {
+        AppendEntriesResponse {
+            term: 0,
+            success: false,
+        }
+    }
 }
 
 fn election_timeout() -> Duration {
@@ -219,7 +259,14 @@ fn election_timeout() -> Duration {
 impl RequestHandler<RPCRequest, RPCResponse> for Raft {
     async fn handle(&self, req: RPCRequest, cx: RequestContext) -> RPCResponse {
         console_log!("Got {:?} from {}", req, cx.source_node_id);
-        unimplemented!()
+        match req {
+            RPCRequest::AppendEntries(req) => {
+                RPCResponse::AppendEntries(self.handle_append_entries(req, cx))
+            }
+            RPCRequest::RequestVote(req) => {
+                RPCResponse::RequestVote(self.handle_request_vote(req, cx))
+            }
+        }
     }
 }
 
