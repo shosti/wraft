@@ -1,17 +1,16 @@
 use crate::raft::errors::Error;
+use crate::raft::{LogPosition, TermIndex};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use web_sys::Storage;
 
-pub type LogPosition = u64;
-
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogEntry {
     pub cmd: LogCmd,
-    pub term: u64,
+    pub term: TermIndex,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LogCmd {
     Set { key: String, data: Vec<u8> },
     Delete { key: String },
@@ -52,15 +51,15 @@ impl PersistentState {
         Ok(entry)
     }
 
-    pub fn current_term(&self) -> u64 {
+    pub fn current_term(&self) -> TermIndex {
         let key = self.current_term_key();
         self.get(&key)
             .expect("current term not set")
-            .parse::<u64>()
+            .parse::<TermIndex>()
             .unwrap()
     }
 
-    pub fn set_current_term(&self, term: u64) {
+    pub fn set_current_term(&self, term: TermIndex) {
         let key = self.current_term_key();
         let val = term.to_string();
         self.set(&key, &val);
@@ -86,9 +85,7 @@ impl PersistentState {
     }
 
     fn get(&self, key: &str) -> Option<String> {
-        self.storage()
-            .get_item(key)
-            .unwrap()
+        self.storage().get_item(key).unwrap()
     }
 
     fn set(&self, key: &str, val: &str) {
