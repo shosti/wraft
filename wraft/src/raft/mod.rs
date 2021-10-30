@@ -2,21 +2,21 @@ pub mod errors;
 mod persistence;
 
 use crate::console_log;
-use crate::util::sleep;
+use crate::util::sleep_fused;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
 use async_trait::async_trait;
 use errors::Error;
-use futures::channel::mpsc::channel;
+use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::prelude::*;
-use persistence::{LogCmd, LogEntry, PersistentState};
-use rand::distributions::Alphanumeric;
+use futures::select;
+use persistence::PersistentState;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -27,7 +27,7 @@ pub struct Raft {
 
 #[derive(Clone, PartialEq, Debug)]
 enum RaftStatus {
-    Follower,
+    Follower { leader_id: Option<String> },
 }
 
 #[derive(Debug)]
@@ -37,6 +37,7 @@ struct RaftState {
     session_key: String,
     cluster_size: usize,
     peer_clients: HashMap<String, Client<RPCRequest, RPCResponse>>,
+    heartbeat_tx: Mutex<Option<Sender<String>>>,
 
     // Volatile state
     commit_index: AtomicU64,
@@ -86,7 +87,7 @@ impl Raft {
         console_log!("FIRING UP!!!");
         let raft = Self {
             state: Arc::new(RaftState {
-                status: RwLock::new(RaftStatus::Follower),
+                status: RwLock::new(RaftStatus::Follower { leader_id: None }),
                 persistent,
                 node_id,
                 session_key,
@@ -94,6 +95,7 @@ impl Raft {
                 peer_clients,
                 commit_index: 0.into(),
                 last_applied: 0.into(),
+                heartbeat_tx: Mutex::new(None),
             }),
         };
 
@@ -121,10 +123,50 @@ impl Raft {
     //     *s = status;
     // }
 
+    fn get_status(&self) -> RaftStatus {
+        let s = self.state.status.read().unwrap();
+        s.clone()
+    }
+
     async fn run(&self) {
         loop {
+            match self.get_status() {
+                RaftStatus::Follower { .. } => self.be_follower().await,
+            }
         }
     }
+
+    async fn be_follower(&self) {
+        console_log!("BEING A FOLLOWER");
+        let mut hb_rx = self.get_heartbeat();
+
+        loop {
+            select! {
+                _ = sleep_fused(election_timeout()) => {
+                    println!("Calling election!");
+                    return;
+                }
+                res = hb_rx.next() => {
+                    let leader = res.unwrap();
+                    console_log!("GOT A HEARTBEAT FROM {}", leader);
+                    // self.set_status(RaftStatus::Follower(Some(leader))).await
+                }
+            }
+        }
+    }
+
+    fn get_heartbeat(&self) -> Receiver<String> {
+        let (tx, rx) = channel(10);
+        let mut hb_tx = self.state.heartbeat_tx.lock().unwrap();
+        *hb_tx = Some(tx);
+
+        rx
+    }
+}
+
+fn election_timeout() -> Duration {
+    let delay = thread_rng().gen_range(150..300);
+    Duration::from_millis(delay)
 }
 
 #[async_trait]

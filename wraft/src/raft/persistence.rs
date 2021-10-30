@@ -75,7 +75,7 @@ impl PersistentState {
         let key = self.voted_for_key();
 
         match val {
-            Some(ref val) => self.set(&key, val),
+            Some(val) => self.set(&key, val),
             None => self.storage().remove_item(&key).unwrap(),
         }
     }
