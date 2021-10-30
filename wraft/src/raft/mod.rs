@@ -2,12 +2,13 @@ pub mod errors;
 mod persistence;
 
 use crate::console_log;
-use crate::util::{sleep, sleep_until};
+use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
 use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -18,7 +19,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
 pub type LogPosition = u64;
@@ -184,10 +185,15 @@ impl Raft {
     async fn be_follower(&self) {
         console_log!("BEING A FOLLOWER");
         let mut hb_rx = self.get_heartbeat();
+        let (timeout_tx, mut timeout) = oneshot::channel::<()>();
+        spawn_local(async move {
+            sleep(election_timeout()).await;
+            let _ = timeout_tx.send(());
+        });
 
         loop {
             select! {
-                _ = sleep(election_timeout()) => {
+                _ = timeout => {
                     console_log!("Calling election!");
                     self.set_status(RaftStatus::Candidate);
                     return;
@@ -221,7 +227,11 @@ impl Raft {
             .map(|(_k, client)| client.call(req.clone()))
             .collect::<FuturesUnordered<_>>();
 
-        let election_deadline = Instant::now() + election_timeout();
+        let (timeout_tx, mut timeout) = oneshot::channel::<()>();
+        spawn_local(async move {
+            sleep(election_timeout()).await;
+            let _ = timeout_tx.send(());
+        });
         loop {
             select! {
                 res = vote_calls.next() =>  {
@@ -245,7 +255,7 @@ impl Raft {
                     self.set_status(RaftStatus::Follower { leader: Some(leader) });
                     break;
                 }
-                _ = sleep_until(election_deadline) => {
+                _ = timeout => {
                     console_log!("ELECTION TIMED OUT");
                     // Election timed out, try again
                     break;
@@ -274,6 +284,7 @@ impl Raft {
                 .map(|(_a, client)| client.call(req.clone()))
                 .collect::<FuturesUnordered<_>>();
             while let Some(_res) = heartbeat_calls.next().await {}
+            sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -328,7 +339,10 @@ impl Raft {
         let hb_tx = self.state.heartbeat_tx.lock().unwrap().clone();
         match hb_tx {
             None => (),
-            Some(mut tx) => tx.send(leader.to_string()).await.unwrap(),
+            Some(mut tx) => match tx.send(leader.to_string()).await {
+                Ok(()) => (),
+                Err(err) => console_log!("heartbeat channel error: {}", err),
+            },
         }
     }
 
@@ -367,7 +381,12 @@ impl RequestHandler<RPCRequest, RPCResponse> for Raft {
 
 impl Debug for Raft {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "Raft (id: {})", self.state.node_id)?;
+        write!(
+            f,
+            "Raft (id: {}, state: {:?})",
+            self.state.node_id,
+            self.get_status()
+        )?;
         Ok(())
     }
 }

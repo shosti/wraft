@@ -221,7 +221,14 @@ async fn handle_client_requests<Req, Resp>(
                         .expect("out of bounds for in-flight requests")
                         .take();
                     match tx_opt {
-                        Some((i, tx)) if i == idx => tx.send(Ok(resp)).unwrap(),
+                        Some((i, tx)) if i == idx => {
+                            match tx.send(Ok(resp)) {
+                                Ok(_) => (),
+                                Err(err) => {
+                                    console_log!("client response channel is closed: {:?}", err);
+                                }
+                            }
+                        }
                         Some((i, tx)) => {
                             console_log!(
                                 "got unexpected response for leftover timed-out request (in-flight ID is {}, response ID is {})",

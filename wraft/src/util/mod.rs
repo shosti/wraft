@@ -1,14 +1,12 @@
 use futures::channel::mpsc::{channel, Receiver};
-use futures::future::Fuse;
 use futures::stream::FusedStream;
 use futures::task::{Context, Poll};
 use futures::Stream;
 use futures::StreamExt;
-use futures::{Future, FutureExt};
 use js_sys::{Function, Promise};
 use std::convert::TryInto;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -36,15 +34,7 @@ pub fn set_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-async fn sleep_until_unfused(then: Instant) {
-    let now = Instant::now();
-    if then < now {
-        return;
-    }
-    sleep_unfused(then - now).await;
-}
-
-async fn sleep_unfused(d: Duration) {
+pub async fn sleep(d: Duration) {
     // Keep reference to callback closure to prevent it from getting prematurely
     // dropped.
     let mut _closure: Option<Closure<dyn Fn()>> = None;
@@ -64,14 +54,6 @@ async fn sleep_unfused(d: Duration) {
     };
     let promise = Promise::new(&mut cb);
     JsFuture::from(promise).await.unwrap();
-}
-
-pub fn sleep(d: Duration) -> Pin<Box<Fuse<impl Future>>> {
-    Box::pin(sleep_unfused(d).fuse())
-}
-
-pub fn sleep_until(then: Instant) -> Pin<Box<Fuse<impl Future>>> {
-    Box::pin(sleep_until_unfused(then).fuse())
 }
 
 pub struct Interval {
