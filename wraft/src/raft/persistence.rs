@@ -1,20 +1,7 @@
 use crate::raft::errors::Error;
-use crate::raft::{LogPosition, TermIndex};
-use serde::{Deserialize, Serialize};
+use crate::raft::{LogEntry, LogPosition, TermIndex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use web_sys::Storage;
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LogEntry {
-    pub cmd: LogCmd,
-    pub term: TermIndex,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum LogCmd {
-    Set { key: String, data: Vec<u8> },
-    Delete { key: String },
-}
 
 #[derive(Debug)]
 pub struct PersistentState {

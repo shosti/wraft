@@ -8,10 +8,11 @@ use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
 use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
-use persistence::{LogEntry, PersistentState};
+use persistence::PersistentState;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,13 +25,17 @@ use wasm_bindgen_futures::spawn_local;
 pub type LogPosition = u64;
 pub type TermIndex = u64;
 pub type NodeId = String;
+type CmdReceiver = Receiver<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
+type CmdSender = Sender<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
+
+const HEARBEAT_INTERVAL_MILLIS: u64 = 50;
 
 #[derive(Clone)]
 pub struct Raft {
     state: Arc<RaftState>,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 enum RaftStatus {
     Follower { leader: Option<NodeId> },
     Candidate,
@@ -45,6 +50,7 @@ struct RaftState {
     cluster_size: usize,
     peer_clients: HashMap<NodeId, Client<RPCRequest, RPCResponse>>,
     heartbeat_tx: Mutex<Option<Sender<NodeId>>>,
+    cmds_tx: CmdSender,
 
     // Volatile state
     commit_index: AtomicU64,
@@ -96,6 +102,18 @@ struct AppendEntriesResponse {
     success: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LogEntry {
+    pub cmd: LogCmd,
+    pub term: TermIndex,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum LogCmd {
+    Set { key: String, data: Vec<u8> },
+    Delete { key: String },
+}
+
 impl Raft {
     pub async fn initiate(
         node_id: NodeId,
@@ -114,7 +132,7 @@ impl Raft {
 
         let target_size = cluster_size - 1;
         while peers.len() < target_size {
-            let peer = peers_rx.next().await.ok_or(Error::NotEnoughPeers())?;
+            let peer = peers_rx.next().await.ok_or(Error::NotEnoughPeers)?;
             console_log!("Got client: {}", peer.node_id());
 
             let peer_id = peer.node_id().clone();
@@ -122,6 +140,7 @@ impl Raft {
             peers.push(peer);
         }
 
+        let (cmds_tx, cmds_rx) = channel(100);
         let persistent = PersistentState::new(&session_key);
         console_log!("FIRING UP!!!");
         let raft = Self {
@@ -132,6 +151,7 @@ impl Raft {
                 session_key,
                 cluster_size,
                 peer_clients,
+                cmds_tx,
                 commit_index: 0.into(),
                 last_applied: 0.into(),
                 heartbeat_tx: Mutex::new(None),
@@ -146,16 +166,23 @@ impl Raft {
         }
         let r = raft.clone();
         spawn_local(async move {
-            r.run().await;
+            r.run(cmds_rx).await;
         });
 
         Ok(raft)
     }
 
-    // fn status_is(&self, status: RaftStatus) -> bool {
-    //     let s = self.state.status.read().unwrap();
-    //     *s == status
-    // }
+    pub async fn set(&self, key: String, data: Vec<u8>) -> Result<(), Error> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let cmd = LogCmd::Set { key, data };
+        self.state
+            .cmds_tx
+            .clone()
+            .send((cmd, resp_tx))
+            .await
+            .unwrap();
+        resp_rx.await.unwrap()
+    }
 
     fn set_status(&self, status: RaftStatus) {
         let mut s = self.state.status.write().unwrap();
@@ -171,30 +198,46 @@ impl Raft {
         (self.state.cluster_size / 2) + 1
     }
 
-    async fn run(&self) {
+    async fn run(&self, mut cmds_rx: CmdReceiver) {
         loop {
             match self.get_status() {
-                RaftStatus::Follower { .. } => self.be_follower().await,
+                RaftStatus::Follower { .. } => self.be_follower(&mut cmds_rx).await,
                 RaftStatus::Candidate => self.be_candidate().await,
-                RaftStatus::Leader => self.be_leader().await,
+                RaftStatus::Leader { .. } => self.be_leader(&mut cmds_rx).await,
             }
         }
     }
 
-    async fn be_follower(&self) {
+    async fn be_follower(&self, cmds_rx: &mut CmdReceiver) {
         console_log!("BEING A FOLLOWER");
         let mut hb_rx = self.get_heartbeat();
+        let (done_tx, mut done_rx) = oneshot::channel::<()>();
+
+        let s = self.clone();
+        spawn_local(async move {
+            loop {
+                select! {
+                    _ = sleep(election_timeout()) => {
+                        console_log!("Calling election!");
+                        s.set_status(RaftStatus::Candidate);
+                        done_tx.send(()).unwrap();
+                        return;
+                    }
+                    res = hb_rx.next() => {
+                        let leader = Some(res.unwrap());
+                        s.set_status(RaftStatus::Follower { leader });
+                    }
+                }
+            }
+        });
 
         loop {
             select! {
-                _ = sleep(election_timeout()) => {
-                    console_log!("Calling election!");
-                    self.set_status(RaftStatus::Candidate);
-                    return;
+                res = cmds_rx.next() => {
+                    console_log!("WOULD FORWARD REQUEST: {:?}", res);
                 }
-                res = hb_rx.next() => {
-                    let leader = Some(res.unwrap());
-                    self.set_status(RaftStatus::Follower { leader });
+                _ = done_rx => {
+                    return;
                 }
             }
         }
@@ -254,26 +297,35 @@ impl Raft {
         persistent.set_voted_for(None);
     }
 
-    async fn be_leader(&self) {
+    async fn be_leader(&self, cmds_rx: &mut CmdReceiver) {
         console_log!("BEING A LEADER");
         let term = self.state.persistent.current_term();
-        while let RaftStatus::Leader = self.get_status() {
-            let req = RPCRequest::AppendEntries(AppendEntriesRequest {
-                term,
-                leader_commit: 0, // TODO: fix
-                prev_log_index: 0,
-                prev_log_term: 0,
-                leader: self.state.node_id.to_string(),
-                entries: Vec::new(),
-            });
-            let mut heartbeat_calls = self
-                .state
-                .peer_clients
-                .iter()
-                .map(|(_a, client)| client.call(req.clone()))
-                .collect::<FuturesUnordered<_>>();
-            while let Some(_res) = heartbeat_calls.next().await {}
-            sleep(Duration::from_millis(50)).await;
+        let mut _next_indices: HashMap<NodeId, LogPosition> = HashMap::new();
+        let mut _match_indices: HashMap<NodeId, LogPosition> = HashMap::new();
+
+        loop {
+            select! {
+                res = cmds_rx.next() => {
+                    console_log!("Handling: {:?}", res);
+                }
+                _ = sleep(Duration::from_millis(HEARBEAT_INTERVAL_MILLIS)) => {
+                    let req = RPCRequest::AppendEntries(AppendEntriesRequest {
+                        term,
+                        leader_commit: 0, // TODO: fix
+                        prev_log_index: 0,
+                        prev_log_term: 0,
+                        leader: self.state.node_id.to_string(),
+                        entries: Vec::new(),
+                    });
+                    let mut heartbeat_calls = self
+                        .state
+                        .peer_clients
+                        .iter()
+                        .map(|(_a, client)| client.call(req.clone()))
+                        .collect::<FuturesUnordered<_>>();
+                    while let Some(_res) = heartbeat_calls.next().await {}
+                }
+            }
         }
     }
 
@@ -331,7 +383,7 @@ impl Raft {
                 // If the heartbeat fails it's probably because we changed state
                 // or something, so ignore errors.
                 let _ = tx.send(leader.to_string()).await;
-            },
+            }
         }
     }
 

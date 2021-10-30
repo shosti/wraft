@@ -7,8 +7,9 @@ use web_sys::Event;
 pub enum Error {
     Js(String),
     Transport(transport::Error),
-    NotEnoughPeers(),
+    NotEnoughPeers,
     Persistence(serde_json::Error),
+    NotLeader,
 }
 
 impl From<serde_json::Error> for Error {

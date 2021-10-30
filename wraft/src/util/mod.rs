@@ -127,6 +127,10 @@ impl Interval {
     }
 }
 
+pub fn interval(d: Duration) -> Interval {
+    Interval::new(d)
+}
+
 impl Drop for Interval {
     fn drop(&mut self) {
         window()
