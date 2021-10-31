@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
-pub type LogPosition = u64;
+pub type LogIndex = u64;
 pub type TermIndex = u64;
 pub type NodeId = String;
 type CmdReceiver = Receiver<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
@@ -38,7 +38,7 @@ pub struct Raft {
 
 #[derive(Clone, Debug)]
 enum RaftStatus {
-    Follower { leader: Option<NodeId> },
+    Follower { leader_id: Option<NodeId> },
     Candidate,
     Leader,
 }
@@ -76,18 +76,18 @@ enum RPCResponse {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AppendEntriesRequest {
     term: TermIndex,
-    leader: NodeId,
-    prev_log_index: LogPosition,
+    leader_id: NodeId,
+    prev_log_index: LogIndex,
     prev_log_term: TermIndex,
     entries: Vec<LogEntry>,
-    leader_commit: LogPosition,
+    leader_commit: LogIndex,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct RequestVoteRequest {
     term: TermIndex,
     candidate: NodeId,
-    last_log_index: LogPosition,
+    last_log_index: LogIndex,
     last_log_term: TermIndex,
 }
 
@@ -146,7 +146,7 @@ impl Raft {
         console_log!("FIRING UP!!!");
         let raft = Self {
             state: Arc::new(RaftState {
-                status: RwLock::new(RaftStatus::Follower { leader: None }),
+                status: RwLock::new(RaftStatus::Follower { leader_id: None }),
                 persistent,
                 node_id,
                 session_key,
@@ -229,8 +229,8 @@ impl Raft {
                         return;
                     }
                     res = hb_rx.next() => {
-                        let leader = Some(res.unwrap());
-                        s.set_status(RaftStatus::Follower { leader });
+                        let leader_id = Some(res.unwrap());
+                        s.set_status(RaftStatus::Follower { leader_id });
                     }
                 }
             }
@@ -285,11 +285,11 @@ impl Raft {
                     }
                 }
                 res = hb_rx.next() => {
-                    let leader = res.unwrap();
-                    console_log!("LEADER: {:#?}", leader);
+                    let leader_id = res.unwrap();
+                    console_log!("LEADER: {:#?}", leader_id);
                     console_log!("I LOSE!");
                     // We got a heartbeat, so we're a follower now
-                    self.set_status(RaftStatus::Follower { leader: Some(leader) });
+                    self.set_status(RaftStatus::Follower { leader_id: Some(leader_id) });
                     break;
                 }
                 _ = timeout => {
@@ -305,8 +305,8 @@ impl Raft {
     async fn be_leader(&self, cmds_rx: &mut CmdReceiver) {
         console_log!("BEING A LEADER");
         let term = self.state.persistent.current_term();
-        let mut _next_indices: HashMap<NodeId, LogPosition> = HashMap::new();
-        let mut _match_indices: HashMap<NodeId, LogPosition> = HashMap::new();
+        let mut _next_indices: HashMap<NodeId, LogIndex> = HashMap::new();
+        let mut _match_indices: HashMap<NodeId, LogIndex> = HashMap::new();
 
         loop {
             select! {
@@ -319,7 +319,7 @@ impl Raft {
                         leader_commit: 0, // TODO: fix
                         prev_log_index: 0,
                         prev_log_term: 0,
-                        leader: self.state.node_id.to_string(),
+                        leader_id: self.state.node_id.to_string(),
                         entries: Vec::new(),
                     });
                     let mut heartbeat_calls = self
@@ -349,7 +349,7 @@ impl Raft {
             match self.get_status() {
                 RaftStatus::Follower { .. } => (),
                 _ => {
-                    self.set_status(RaftStatus::Follower { leader: None });
+                    self.set_status(RaftStatus::Follower { leader_id: None });
                 }
             }
         }
@@ -380,21 +380,21 @@ impl Raft {
         }
     }
 
-    async fn send_heartbeat(&self, leader: &str) {
+    async fn send_heartbeat(&self, leader_id: &str) {
         let hb_tx = self.state.heartbeat_tx.lock().unwrap().clone();
         match hb_tx {
             None => (),
             Some(mut tx) => {
                 // If the heartbeat fails it's probably because we changed state
                 // or something, so ignore errors.
-                let _ = tx.send(leader.to_string()).await;
+                let _ = tx.send(leader_id.to_string()).await;
             }
         }
     }
 
     async fn handle_append_entries(&self, req: AppendEntriesRequest) -> AppendEntriesResponse {
         self.update_term(req.term);
-        self.send_heartbeat(&req.leader).await;
+        self.send_heartbeat(&req.leader_id).await;
 
         let term = self.state.persistent.current_term();
 
