@@ -49,7 +49,7 @@ struct RaftState {
     node_id: NodeId,
     session_key: String,
     cluster_size: usize,
-    peer_clients: HashMap<NodeId, Client<RPCRequest, RPCResponse>>,
+    peer_clients: HashMap<NodeId, Client<RpcRequest, RpcResponse>>,
     heartbeat_tx: Mutex<Option<Sender<NodeId>>>,
     cmds_tx: CmdSender,
 
@@ -62,13 +62,13 @@ struct RaftState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-enum RPCRequest {
+enum RpcRequest {
     AppendEntries(AppendEntriesRequest),
     RequestVote(RequestVoteRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-enum RPCResponse {
+enum RpcResponse {
     AppendEntries(AppendEntriesResponse),
     RequestVote(RequestVoteResponse),
 }
@@ -125,7 +125,7 @@ impl Raft {
         let mut peers = Vec::new();
         let mut peer_clients = HashMap::new();
 
-        spawn_local(introduce::<RPCRequest, RPCResponse>(
+        spawn_local(introduce::<RpcRequest, RpcResponse>(
             node_id.clone(),
             session_key.clone(),
             peers_tx,
@@ -255,7 +255,7 @@ impl Raft {
         persistent.set_voted_for(Some(&self.state.node_id));
         persistent.set_current_term(persistent.current_term() + 1);
 
-        let req = RPCRequest::RequestVote(RequestVoteRequest {
+        let req = RpcRequest::RequestVote(RequestVoteRequest {
             term: persistent.current_term(),
             candidate: self.state.node_id.to_string(),
             last_log_index: persistent.last_log_index(),
@@ -273,7 +273,7 @@ impl Raft {
         loop {
             select! {
                 res = vote_calls.next() =>  {
-                    if let Some(Ok(RPCResponse::RequestVote(resp))) = res {
+                    if let Some(Ok(RpcResponse::RequestVote(resp))) = res {
                         if resp.vote_granted {
                             votes += 1;
                         }
@@ -314,7 +314,7 @@ impl Raft {
                     console_log!("Handling: {:?}", res);
                 }
                 _ = sleep(Duration::from_millis(HEARBEAT_INTERVAL_MILLIS)) => {
-                    let req = RPCRequest::AppendEntries(AppendEntriesRequest {
+                    let req = RpcRequest::AppendEntries(AppendEntriesRequest {
                         term,
                         leader_commit: 0, // TODO: fix
                         prev_log_index: 0,
@@ -411,14 +411,14 @@ fn election_timeout() -> Duration {
 }
 
 #[async_trait]
-impl RequestHandler<RPCRequest, RPCResponse> for Raft {
-    async fn handle(&self, req: RPCRequest, _cx: RequestContext) -> RPCResponse {
+impl RequestHandler<RpcRequest, RpcResponse> for Raft {
+    async fn handle(&self, req: RpcRequest, _cx: RequestContext) -> RpcResponse {
         match req {
-            RPCRequest::AppendEntries(req) => {
-                RPCResponse::AppendEntries(self.handle_append_entries(req).await)
+            RpcRequest::AppendEntries(req) => {
+                RpcResponse::AppendEntries(self.handle_append_entries(req).await)
             }
-            RPCRequest::RequestVote(req) => {
-                RPCResponse::RequestVote(self.handle_request_vote(req).await)
+            RpcRequest::RequestVote(req) => {
+                RpcResponse::RequestVote(self.handle_request_vote(req).await)
             }
         }
     }
