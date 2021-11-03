@@ -34,6 +34,16 @@ impl PersistentState {
         }
     }
 
+    // Returns true if the term needed to be updated
+    pub fn update_term(&self, term: TermIndex) -> bool {
+        if self.current_term() < term {
+            self.set_current_term(term);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn _append_log(&self, entry: LogEntry) -> Result<(), Error> {
         let last_log = self.last_log_index.fetch_add(1, Ordering::SeqCst);
         let key = self.log_key(last_log + 1);
