@@ -4,7 +4,7 @@ mod persistence;
 use crate::console_log;
 use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
-use crate::webrtc_rpc::transport::{Client, RequestContext, RequestHandler};
+use crate::webrtc_rpc::transport::{self, Client, RequestContext, RequestHandler};
 use async_trait::async_trait;
 use errors::Error;
 use futures::channel::mpsc::{channel, Receiver, Sender};
@@ -412,14 +412,18 @@ fn election_timeout() -> Duration {
 
 #[async_trait]
 impl RequestHandler<RpcRequest, RpcResponse> for Raft {
-    async fn handle(&self, req: RpcRequest, _cx: RequestContext) -> RpcResponse {
+    async fn handle(
+        &self,
+        req: RpcRequest,
+        _cx: RequestContext,
+    ) -> Result<RpcResponse, transport::Error> {
         match req {
-            RpcRequest::AppendEntries(req) => {
-                RpcResponse::AppendEntries(self.handle_append_entries(req).await)
-            }
-            RpcRequest::RequestVote(req) => {
-                RpcResponse::RequestVote(self.handle_request_vote(req).await)
-            }
+            RpcRequest::AppendEntries(req) => Ok(RpcResponse::AppendEntries(
+                self.handle_append_entries(req).await,
+            )),
+            RpcRequest::RequestVote(req) => Ok(RpcResponse::RequestVote(
+                self.handle_request_vote(req).await,
+            )),
         }
     }
 }

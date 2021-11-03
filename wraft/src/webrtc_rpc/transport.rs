@@ -19,12 +19,18 @@ const MAX_IN_FLIGHT_REQUESTS: usize = 1024;
 const REQUEST_TIMEOUT_MILLIS: u64 = 1000;
 
 type RequestSender<Req, Resp> = Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>;
-type RequestReceiver<Req, Resp> = Receiver<(Req, oneshot::Sender<Resp>)>;
+type RequestReceiver<Req, Resp> = Receiver<(Req, oneshot::Sender<Result<Resp, Error>>)>;
 
 #[derive(Serialize, Deserialize)]
 enum Message<Req, Resp> {
-    Request { idx: usize, req: Req },
-    Response { idx: usize, resp: Resp },
+    Request {
+        idx: usize,
+        req: Req,
+    },
+    Response {
+        idx: usize,
+        resp: Result<Resp, Error>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -58,7 +64,7 @@ pub struct RequestContext {
 
 #[async_trait]
 pub trait RequestHandler<Req, Resp> {
-    async fn handle(&self, req: Req, cx: RequestContext) -> Resp;
+    async fn handle(&self, req: Req, cx: RequestContext) -> Result<Resp, Error>;
 }
 
 impl<Req, Resp> PeerTransport<Req, Resp>
@@ -225,7 +231,7 @@ async fn handle_client_requests<Req, Resp>(
                             // Best-effort reply (if the caller is gone then one
                             // can assume that the request has been canceled or
                             // something).
-                            let _ = tx.send(Ok(resp));
+                            let _ = tx.send(resp);
                         }
                         Some((i, tx)) => {
                             console_log!(
@@ -297,7 +303,7 @@ impl<Req, Resp> Debug for PeerTransport<Req, Resp> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Error {
     Js(String),
     RequestTimeout,
