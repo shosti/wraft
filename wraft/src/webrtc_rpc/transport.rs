@@ -301,6 +301,7 @@ pub enum Error {
     RequestTimeout,
     TooManyInFlightRequests,
     Disconnected,
+    Unavailable,
 }
 
 impl From<JsValue> for Error {
@@ -319,6 +320,7 @@ impl std::fmt::Display for Error {
             Error::RequestTimeout => write!(f, "request timeout"),
             Error::TooManyInFlightRequests => write!(f, "too many in-flight requests"),
             Error::Disconnected => write!(f, "data channel has been disconnected"),
+            Error::Unavailable => write!(f, "rpc server is unavailable"),
         }
     }
 }

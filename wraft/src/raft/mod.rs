@@ -27,6 +27,10 @@ pub type TermIndex = u64;
 pub type NodeId = String;
 type CmdReceiver = Receiver<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
 type CmdSender = Sender<(LogCmd, oneshot::Sender<Result<(), Error>>)>;
+type RequestSender = Sender<(
+    RpcRequest,
+    oneshot::Sender<Result<RpcResponse, transport::Error>>,
+)>;
 
 const HEARBEAT_INTERVAL_MILLIS: u64 = 50;
 const COMMAND_TIMEOUT_MILLIS: u64 = 500;
@@ -408,6 +412,29 @@ impl Raft {
 fn election_timeout() -> Duration {
     let delay = thread_rng().gen_range(150..300);
     Duration::from_millis(delay)
+}
+
+struct RpcServer {
+    tx: RequestSender,
+}
+
+#[async_trait]
+impl RequestHandler<RpcRequest, RpcResponse> for RpcServer {
+    async fn handle(&self, req: RpcRequest) -> Result<RpcResponse, transport::Error> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .clone()
+            .send((req, resp_tx))
+            .await
+            .expect("request channel closed");
+
+        match resp_rx.await {
+            Ok(resp) => resp,
+            // If the response is closed, we probably changed state mid-request
+            // so there's no reasonable response
+            Err(_) => Err(transport::Error::Unavailable),
+        }
+    }
 }
 
 #[async_trait]
