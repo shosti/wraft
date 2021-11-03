@@ -46,7 +46,7 @@ pub struct PeerTransport<Req, Resp> {
     client_req_tx: RequestSender<Req, Resp>,
     server_req_rx: RequestReceiver<Req, Resp>,
     _connection: RtcPeerConnection,
-    _message_cb: Closure<dyn FnMut(MessageEvent)>,
+    _onmessage_cb: Closure<dyn FnMut(MessageEvent)>,
     _onclose_cb: Closure<dyn FnMut()>,
     _onerror_cb: Closure<dyn FnMut()>,
 }
@@ -83,40 +83,12 @@ where
             client_resp_rx,
             data_channel.clone(),
         ));
-        let msg_dc = data_channel.clone();
-        let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
-            let mut client_tx = client_resp_tx.clone();
-            let mut server_tx = server_req_tx.clone();
-            let dc = msg_dc.clone();
-            spawn_local(async move {
-                let abuf = ev
-                    .data()
-                    .dyn_into::<js_sys::ArrayBuffer>()
-                    .expect("Expected message in binary format");
-                let data = js_sys::Uint8Array::new(&abuf).to_vec();
-
-                let msg = bincode::deserialize::<Message<Req, Resp>>(&data).unwrap();
-                match msg {
-                    Message::Request { idx, req } => {
-                        // Got a request from the other side's client
-                        let (tx, rx) = oneshot::channel();
-                        server_tx.send((req, tx)).await.unwrap();
-                        let resp = rx.await.unwrap();
-
-                        let msg: Message<Req, Resp> = Message::Response { idx, resp };
-                        let data = bincode::serialize(&msg).unwrap();
-                        if let Err(err) = dc.send_with_u8_array(&data) {
-                            console_log!("error sending data: {:?}", err);
-                        }
-                    }
-                    Message::Response { idx: _, resp: _ } => {
-                        // Got a response to one of our requests
-                        client_tx.send(msg).await.unwrap();
-                    }
-                }
-            });
-        }) as Box<dyn FnMut(MessageEvent)>);
-        data_channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+        let onmessage_cb = Self::onmessage_callback(
+            client_resp_tx,
+            server_req_tx,
+            data_channel.clone(),
+        );
+        data_channel.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
 
         let status = Arc::new(RwLock::new(Status::Connected));
         let s = status.clone();
@@ -139,11 +111,55 @@ where
             data_channel,
             client_req_tx,
             server_req_rx,
+            _onmessage_cb: onmessage_cb,
             _connection: connection,
-            _message_cb: cb,
             _onclose_cb: onclose_cb,
             _onerror_cb: onerror_cb,
         }
+    }
+
+    fn onmessage_callback(
+        client_resp_tx: Sender<Message<Req, Resp>>,
+        server_req_tx: RequestSender<Req, Resp>,
+        data_channel: RtcDataChannel,
+    ) -> Closure<dyn FnMut(MessageEvent)> {
+        Closure::wrap(Box::new(move |ev: MessageEvent| {
+            let mut client_tx = client_resp_tx.clone();
+            let mut server_tx = server_req_tx.clone();
+            let dc = data_channel.clone();
+            spawn_local(async move {
+                let abuf = ev
+                    .data()
+                    .dyn_into::<js_sys::ArrayBuffer>()
+                    .expect("Expected message in binary format");
+                let data = js_sys::Uint8Array::new(&abuf).to_vec();
+
+                match bincode::deserialize::<Message<Req, Resp>>(&data).unwrap() {
+                    Message::Request { idx, req } => {
+                        // Got a request from the other side's client
+                        let (tx, rx) = oneshot::channel();
+                        server_tx
+                            .send((req, tx))
+                            .await
+                            .expect("server request channel closed");
+                        let resp = rx.await.expect("channel closed");
+
+                        let msg: Message<Req, Resp> = Message::Response { idx, resp };
+                        let data = bincode::serialize(&msg).unwrap();
+                        if let Err(err) = dc.send_with_u8_array(&data) {
+                            console_log!("error sending data: {:?}", err);
+                        }
+                    }
+                    msg@Message::Response { idx: _, resp: _ } => {
+                        // Got a response to one of our requests
+                        client_tx
+                            .send(msg)
+                            .await
+                            .expect("client response channel closed");
+                    }
+                }
+            });
+        }) as Box<dyn FnMut(MessageEvent)>)
     }
 
     pub fn node_id(&self) -> String {
