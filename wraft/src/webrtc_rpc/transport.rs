@@ -57,14 +57,9 @@ pub struct Client<Req, Resp> {
     req_tx: RequestSender<Req, Resp>,
 }
 
-#[derive(Debug, Clone)]
-pub struct RequestContext {
-    pub source_node_id: String,
-}
-
 #[async_trait]
 pub trait RequestHandler<Req, Resp> {
-    async fn handle(&self, req: Req, cx: RequestContext) -> Result<Resp, Error>;
+    async fn handle(&self, req: Req) -> Result<Resp, Error>;
 }
 
 impl<Req, Resp> PeerTransport<Req, Resp>
@@ -156,11 +151,8 @@ where
     }
 
     pub async fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
-        let cx = RequestContext {
-            source_node_id: self.node_id.clone(),
-        };
         while let Some((req, tx)) = self.server_req_rx.next().await {
-            let resp = handler.handle(req, cx.clone()).await;
+            let resp = handler.handle(req).await;
             tx.send(resp).unwrap();
         }
     }
