@@ -1,19 +1,18 @@
 use crate::raft::errors::Error;
 use crate::raft::{LogEntry, LogIndex, TermIndex};
-use std::sync::atomic::{AtomicU64, Ordering};
 use web_sys::Storage;
 
 #[derive(Debug)]
 pub struct PersistentState {
     session_key: String,
-    last_log_index: AtomicU64,
+    last_log_index: LogIndex,
 }
 
 impl PersistentState {
     pub fn new(session_key: &str) -> Self {
         let state = Self {
             session_key: session_key.to_string(),
-            last_log_index: AtomicU64::new(0),
+            last_log_index: 0,
         };
 
         if state.get(state.current_term_key().as_str()).is_none() {
@@ -24,7 +23,7 @@ impl PersistentState {
     }
 
     pub fn last_log_index(&self) -> LogIndex {
-        self.last_log_index.load(Ordering::SeqCst)
+        self.last_log_index
     }
 
     pub fn last_log_term(&self) -> TermIndex {
@@ -44,9 +43,9 @@ impl PersistentState {
         }
     }
 
-    pub fn _append_log(&self, entry: LogEntry) -> Result<(), Error> {
-        let last_log = self.last_log_index.fetch_add(1, Ordering::SeqCst);
-        let key = self.log_key(last_log + 1);
+    pub fn _append_log(&mut self, entry: LogEntry) -> Result<(), Error> {
+        self.last_log_index += 1;
+        let key = self.log_key(self.last_log_index);
         let data = serde_json::to_string(&entry)?;
         self.storage().set_item(&key, &data).unwrap();
         Ok(())
