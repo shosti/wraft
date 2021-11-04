@@ -19,7 +19,7 @@ use wasm_bindgen_futures::spawn_local;
 
 const HEARBEAT_INTERVAL_MILLIS: u64 = 50;
 
-enum RaftWorkerWrapper {
+enum RaftWorkerState {
     Follower(RaftWorker<Follower>),
     Candidate(RaftWorker<Candidate>),
     Leader(RaftWorker<Leader>),
@@ -86,18 +86,18 @@ pub async fn run(
         last_applied: 0,
     };
 
-    let mut worker = RaftWorkerWrapper::Follower(RaftWorker::new(state));
+    let mut worker = RaftWorkerState::Follower(RaftWorker::new(state));
     loop {
         worker = worker.next().await;
     }
 }
 
-impl RaftWorkerWrapper {
+impl RaftWorkerState {
     async fn next(self) -> Self {
         match self {
-            RaftWorkerWrapper::Follower(worker) => worker.next().await,
-            RaftWorkerWrapper::Candidate(worker) => worker.next().await,
-            RaftWorkerWrapper::Leader(worker) => worker.next().await,
+            RaftWorkerState::Follower(worker) => worker.next().await,
+            RaftWorkerState::Candidate(worker) => worker.next().await,
+            RaftWorkerState::Leader(worker) => worker.next().await,
         }
     }
 }
@@ -153,7 +153,7 @@ impl RaftWorker<Follower> {
         }
     }
 
-    async fn next(mut self) -> RaftWorkerWrapper {
+    async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A FOLLOWER");
         let mut timeout = self.election_timeout();
 
@@ -169,7 +169,7 @@ impl RaftWorker<Follower> {
                 }
                 _ = timeout => {
                     console_log!("Calling election!");
-                    return RaftWorkerWrapper::Candidate(self.into());
+                    return RaftWorkerState::Candidate(self.into());
                 }
             }
         }
@@ -201,7 +201,7 @@ impl RaftWorker<Follower> {
 }
 
 impl RaftWorker<Candidate> {
-    async fn next(mut self) -> RaftWorkerWrapper {
+    async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A CANDIDATE");
         self.state.persistent.increment_term();
         self.vote_for_self();
@@ -216,18 +216,18 @@ impl RaftWorker<Candidate> {
                     votes += 1;
                     if votes >= self.votes_required() {
                         console_log!("I WIN!!!");
-                        return RaftWorkerWrapper::Leader(self.into());
+                        return RaftWorkerState::Leader(self.into());
                     }
                 }
                 res = self.state.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
                     if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
-                        return RaftWorkerWrapper::Follower(self.into());
+                        return RaftWorkerState::Follower(self.into());
                     }
                 }
                 _ = timeout => {
                     console_log!("ELECTION TIMED OUT");
-                    return RaftWorkerWrapper::Candidate(self);
+                    return RaftWorkerState::Candidate(self);
                 }
             }
         }
@@ -305,7 +305,7 @@ impl RaftWorker<Candidate> {
 }
 
 impl RaftWorker<Leader> {
-    async fn next(mut self) -> RaftWorkerWrapper {
+    async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A LEADER");
 
         let (resps_tx, mut resps_rx) = channel::<Result<RpcResponse, transport::Error>>(100);
@@ -317,13 +317,13 @@ impl RaftWorker<Leader> {
                 res = resps_rx.next() => {
                     let resp = res.expect("response channel closed");
                     if let StateChange::BecomeFollower = self.handle_append_entries_response(resp) {
-                        return RaftWorkerWrapper::Follower(self.into());
+                        return RaftWorkerState::Follower(self.into());
                     }
                 }
                 res = self.state.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
                     if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
-                        return RaftWorkerWrapper::Follower(self.into());
+                        return RaftWorkerState::Follower(self.into());
                     }
                 }
                 res = self.state.client_rx.next() => {
