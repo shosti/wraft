@@ -301,8 +301,8 @@ impl RaftWorker<Leader> {
 
         let (resps_tx, mut resps_rx) = channel::<Result<RpcResponse, transport::Error>>(100);
 
-        let heartbeat_interval = Duration::from_millis(HEARBEAT_INTERVAL_MILLIS);
-        let mut heartbeat = sleep(heartbeat_interval);
+        // Initial heartbeat happens immediately
+        let mut heartbeat = sleep(Duration::from_millis(0));
         loop {
             select! {
                 res = resps_rx.next() => {
@@ -322,15 +322,19 @@ impl RaftWorker<Leader> {
                     console_log!("Doing something with: {:?}", req);
                     resp_tx.send(Ok(ClientResponse::Ack)).expect("client response closed");
                     // We sent something, so reset the heartbeat timeout
-                    heartbeat = sleep(heartbeat_interval);
+                    heartbeat = self.heartbeat_timeout();
                 }
                 _ = heartbeat => {
                     let empty_entries = Vec::new();
                     self.send_append_entries(empty_entries, &resps_tx);
-                    heartbeat = sleep(heartbeat_interval);
+                    heartbeat = self.heartbeat_timeout();
                 }
             }
         }
+    }
+
+    fn heartbeat_timeout(&self) -> Sleep {
+        sleep(Duration::from_millis(HEARBEAT_INTERVAL_MILLIS))
     }
 
     fn handle_rpc(
