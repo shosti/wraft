@@ -25,7 +25,7 @@ type PeerInfo = (String, RtcPeerConnection, RtcDataChannel);
 struct State {
     node_id: Arc<String>,
     session_id: Arc<String>,
-    peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
+    peers: Arc<RwLock<HashMap<String, Option<RtcPeerConnection>>>>,
     peer_tx: Sender<PeerInfo>,
 }
 
@@ -41,16 +41,20 @@ impl State {
 
     pub fn insert_peer(&self, peer_id: &str, pc: RtcPeerConnection) {
         let mut peers = self.peers.write().unwrap();
-        peers.insert(peer_id.to_string(), pc);
+        peers.insert(peer_id.to_string(), Some(pc));
     }
 
-    pub async fn send_peer(
-        &self,
-        peer_id: &str,
-        pc: RtcPeerConnection,
-        dc: RtcDataChannel,
-    ) -> Result<(), Error> {
+    pub async fn send_peer(&self, peer_id: &str, dc: RtcDataChannel) -> Result<(), Error> {
         let mut tx = self.peer_tx.clone();
+        let pc;
+        {
+            let mut peers = self.peers.write().unwrap();
+            if let Some(p) = peers.get_mut(peer_id).expect("peer not found").take() {
+                pc = p;
+            } else {
+                panic!("peer {} sent twice", peer_id);
+            }
+        }
         tx.send((peer_id.to_string(), pc, dc)).await?;
 
         Ok(())
@@ -117,11 +121,11 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
 
 async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), Error> {
     let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
-    state.insert_peer(&peer_id, pc.clone());
-
     let dc = pc.create_data_channel(
         format!("data-{}-{}-{}", state.session_id, state.node_id, peer_id).as_str(),
     );
+    let sdp_data = local_description(&pc).await?;
+    state.insert_peer(&peer_id, pc);
 
     let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
     let dc_clone = dc.clone();
@@ -130,13 +134,12 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
         done_tx.send(()).unwrap();
     });
 
-    let sdp_data = local_description(&pc).await?;
     send_offer(&peer_id, &sdp_data, ws, state.clone()).await?;
 
     done_rx.await.unwrap();
     assert_eq!(dc.ready_state(), RtcDataChannelState::Open);
 
-    state.send_peer(&peer_id, pc, dc).await?;
+    state.send_peer(&peer_id, dc).await?;
 
     Ok(())
 }
@@ -190,16 +193,24 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
     send_answer(&peer_id, &answer_sdp, ws, state.clone()).await?;
 
     let dc = dc_rx.await.unwrap();
-    state.send_peer(&peer_id, pc, dc).await?;
+    state.send_peer(&peer_id, dc).await?;
 
     Ok(())
 }
 
 async fn handle_answer(answer: Offer, state: State) -> Result<(), Error> {
-    let peers = state.peers.read().unwrap();
-    let pc = peers
-        .get(&answer.node_id)
-        .ok_or_else(|| Error::String(format!("No connection found for {}", &answer.node_id)))?;
+    let pc;
+    {
+        let peers = state.peers.read().unwrap();
+        let pc_opt = peers
+            .get(&answer.node_id)
+            .ok_or_else(|| Error::String(format!("No connection found for {}", &answer.node_id)))?;
+        if let Some(p) = pc_opt {
+            pc = p.clone();
+        } else {
+            return Err(Error::AlreadyInitialized(answer.node_id.clone()))
+        }
+    }
     let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
     desc.sdp(&answer.sdp_data);
     JsFuture::from(pc.set_remote_description(&desc)).await?;
@@ -211,16 +222,20 @@ async fn handle_ice_candidate(candidate: IceCandidate, state: State) -> Result<(
     let add_ice_promise;
     {
         let peers = state.peers.read().unwrap();
-        let pc = peers.get(&candidate.node_id).ok_or_else(|| {
+        let pc_opt = peers.get(&candidate.node_id).ok_or_else(|| {
             Error::String(format!("No connection found for {}", candidate.node_id))
         })?;
-        let mut cand = RtcIceCandidateInit::new(&candidate.candidate);
-        if let Some(sdp_mid) = candidate.sdp_mid {
-            cand.sdp_mid(Some(&sdp_mid));
+        if let Some(pc) = pc_opt {
+            let mut cand = RtcIceCandidateInit::new(&candidate.candidate);
+            if let Some(sdp_mid) = candidate.sdp_mid {
+                cand.sdp_mid(Some(&sdp_mid));
+            } else {
+                cand.sdp_mid(None);
+            }
+            add_ice_promise = pc.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&cand));
         } else {
-            cand.sdp_mid(None);
+            return Err(Error::AlreadyInitialized(candidate.node_id.clone()));
         }
-        add_ice_promise = pc.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&cand));
     }
     JsFuture::from(add_ice_promise).await?;
     Ok(())

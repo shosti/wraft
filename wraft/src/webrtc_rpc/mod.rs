@@ -17,6 +17,7 @@ pub mod error {
         Js(JsValue),
         Rust(Box<dyn std::error::Error>),
         String(String),
+        AlreadyInitialized(String),
     }
 
     impl From<JsValue> for Error {
