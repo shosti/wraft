@@ -32,7 +32,10 @@ struct RaftWorker<S> {
 
 struct Follower {}
 struct Candidate {}
-struct Leader {}
+struct Leader {
+    _next_indices: HashMap<NodeId, LogIndex>,
+    _match_indices: HashMap<NodeId, LogIndex>,
+}
 
 type RpcClient = Client<RpcRequest, RpcResponse>;
 
@@ -296,8 +299,6 @@ impl RaftWorker<Leader> {
     async fn next(mut self) -> RaftWorkerWrapper {
         console_log!("BEING A LEADER");
 
-        let mut _next_indices: HashMap<NodeId, LogIndex> = HashMap::new();
-        let mut _match_indices: HashMap<NodeId, LogIndex> = HashMap::new();
         let (resps_tx, mut resps_rx) = channel::<Result<RpcResponse, transport::Error>>(100);
 
         let heartbeat_interval = Duration::from_millis(HEARBEAT_INTERVAL_MILLIS);
@@ -457,7 +458,10 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
     fn from(from: RaftWorker<Candidate>) -> Self {
         let mut next = Self {
             state: from.state,
-            _status: Leader {},
+            _status: Leader {
+                _next_indices: HashMap::new(),
+                _match_indices: HashMap::new(),
+            },
         };
         next.state.leader_id = Some(next.state.node_id.clone());
         next
