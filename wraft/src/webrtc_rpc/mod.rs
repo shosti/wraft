@@ -10,12 +10,13 @@ pub async fn introduce<Req, Resp>(
     id: String,
     session_id: String,
     peers_tx: Sender<PeerTransport<Req, Resp>>,
-)
-where
+) where
     Req: Serialize + DeserializeOwned + Debug + 'static,
     Resp: Serialize + DeserializeOwned + Debug + 'static,
 {
-    introduction::initiate::<Req, Resp>(&id, &session_id, peers_tx).await.unwrap();
+    introduction::initiate::<Req, Resp>(&id, &session_id, peers_tx)
+        .await
+        .unwrap();
 }
 
 pub mod error {

@@ -83,11 +83,8 @@ where
             client_resp_rx,
             data_channel.clone(),
         ));
-        let onmessage_cb = Self::onmessage_callback(
-            client_resp_tx,
-            server_req_tx,
-            data_channel.clone(),
-        );
+        let onmessage_cb =
+            Self::onmessage_callback(client_resp_tx, server_req_tx, data_channel.clone());
         data_channel.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
 
         let status = Arc::new(RwLock::new(Status::Connected));
@@ -150,7 +147,7 @@ where
                             console_log!("error sending data: {:?}", err);
                         }
                     }
-                    msg@Message::Response { idx: _, resp: _ } => {
+                    msg @ Message::Response { idx: _, resp: _ } => {
                         // Got a response to one of our requests
                         client_tx
                             .send(msg)
