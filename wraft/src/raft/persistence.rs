@@ -36,6 +36,7 @@ impl PersistentState {
     // Returns true if the term needed to be updated
     pub fn update_term(&self, term: TermIndex) -> bool {
         if self.current_term() < term {
+            self.set_voted_for(None);
             self.set_current_term(term);
             true
         } else {
@@ -44,6 +45,7 @@ impl PersistentState {
     }
 
     pub fn increment_term(&self) {
+        self.set_voted_for(None);
         self.set_current_term(self.current_term() + 1);
     }
 
@@ -74,7 +76,7 @@ impl PersistentState {
             .unwrap()
     }
 
-    pub fn set_current_term(&self, term: TermIndex) {
+    fn set_current_term(&self, term: TermIndex) {
         let key = self.current_term_key();
         let val = term.to_string();
         self.set(&key, &val);
