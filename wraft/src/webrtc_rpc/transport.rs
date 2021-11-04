@@ -7,7 +7,6 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -32,12 +31,10 @@ enum Message<Req, Resp> {
     },
 }
 
-pub struct PeerTransport<Req, Resp> {
+pub struct PeerTransport {
     node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
-    _request: PhantomData<Req>,
-    _response: PhantomData<Resp>,
 }
 
 #[derive(Debug)]
@@ -48,8 +45,8 @@ pub struct Server<Req, Resp> {
     server_req_rx: Receiver<RequestMessage<Req, Resp>>,
 
     // Keep references to JS closures for memory-management purposes
-    _onmessage_cb: Closure<dyn FnMut(MessageEvent)>,
-    _onclose_cb: Closure<dyn FnMut()>,
+    _onmessage_cb: Option<Closure<dyn FnMut(MessageEvent)>>,
+    _onclose_cb: Option<Closure<dyn FnMut()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,11 +60,7 @@ pub trait RequestHandler<Req, Resp> {
     async fn handle(&self, req: Req) -> Result<Resp, Error>;
 }
 
-impl<Req, Resp> PeerTransport<Req, Resp>
-where
-    Req: Serialize + DeserializeOwned + Debug + 'static,
-    Resp: Serialize + DeserializeOwned + Debug + 'static,
-{
+impl PeerTransport {
     pub fn new(
         node_id: String,
         connection: RtcPeerConnection,
@@ -77,12 +70,14 @@ where
             node_id,
             connection,
             data_channel,
-            _request: PhantomData,
-            _response: PhantomData,
         }
     }
 
-    pub fn start(self) -> (Client<Req, Resp>, Server<Req, Resp>) {
+    pub fn start<Req, Resp>(self) -> (Client<Req, Resp>, Server<Req, Resp>)
+    where
+        Req: Serialize + DeserializeOwned + Debug + 'static,
+        Resp: Serialize + DeserializeOwned + Debug + 'static,
+    {
         self.data_channel
             .set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
 
@@ -97,22 +92,21 @@ where
             self.data_channel.clone(),
         ));
 
-        let onclose_cb = self.set_onclose_callback(
-            client_req_tx.clone(),
-            client_resp_tx.clone(),
-            server_req_tx.clone(),
-        );
-
-        let onmessage_cb = self.set_onmessage_callback(client_resp_tx, server_req_tx);
-
-        let server = Server {
+        let mut server = Server {
             server_req_rx,
             node_id: self.node_id.clone(),
             data_channel: self.data_channel,
             connection: self.connection,
-            _onmessage_cb: onmessage_cb,
-            _onclose_cb: onclose_cb,
+            _onmessage_cb: None,
+            _onclose_cb: None,
         };
+
+        server.set_onclose_callback(
+            client_req_tx.clone(),
+            client_resp_tx.clone(),
+            server_req_tx.clone(),
+        );
+        server.set_onmessage_callback(client_resp_tx, server_req_tx);
 
         let client = Client {
             node_id: self.node_id,
@@ -122,11 +116,32 @@ where
         (client, server)
     }
 
+    pub fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+}
+
+impl<Req, Resp> Server<Req, Resp>
+where
+    Req: Serialize + DeserializeOwned + Debug + 'static,
+    Resp: Serialize + DeserializeOwned + Debug + 'static,
+{
+    pub async fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
+        while let Some((req, tx)) = self.server_req_rx.next().await {
+            let resp = handler.handle(req).await;
+            if tx.send(resp).is_err() {
+                // Server is down, so we're done serving requests
+                break;
+            }
+        }
+        console_log!("done handling requests for {}", self.node_id);
+    }
+
     fn set_onmessage_callback(
-        &self,
+        &mut self,
         client_resp_tx: Sender<Message<Req, Resp>>,
         server_req_tx: Sender<RequestMessage<Req, Resp>>,
-    ) -> Closure<dyn FnMut(MessageEvent)> {
+    ) {
         let data_channel = self.data_channel.clone();
 
         let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
@@ -169,15 +184,15 @@ where
         self.data_channel
             .set_onmessage(Some(cb.as_ref().unchecked_ref()));
 
-        cb
+        self._onmessage_cb = Some(cb);
     }
 
     fn set_onclose_callback(
-        &self,
+        &mut self,
         mut client_req_tx: Sender<RequestMessage<Req, Resp>>,
         mut client_resp_tx: Sender<Message<Req, Resp>>,
         mut server_req_tx: Sender<RequestMessage<Req, Resp>>,
-    ) -> Closure<dyn FnMut()> {
+    ) {
         let node_id = self.node_id.clone();
 
         let cb = Closure::once(move || {
@@ -193,27 +208,7 @@ where
         self.data_channel
             .set_onclose(Some(cb.as_ref().unchecked_ref()));
 
-        cb
-    }
-
-    pub fn node_id(&self) -> String {
-        self.node_id.clone()
-    }
-}
-
-impl<Req, Resp> Server<Req, Resp>
-where
-    Resp: Debug,
-{
-    pub async fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
-        while let Some((req, tx)) = self.server_req_rx.next().await {
-            let resp = handler.handle(req).await;
-            if tx.send(resp).is_err() {
-                // Server is down, so we're done serving requests
-                break;
-            }
-        }
-        console_log!("done handling requests for {}", self.node_id);
+        self._onclose_cb = Some(cb);
     }
 }
 
@@ -230,8 +225,8 @@ async fn handle_client_requests<Req, Resp>(
     mut resp_rx: Receiver<Message<Req, Resp>>,
     dc: RtcDataChannel,
 ) where
-    Req: Serialize + Debug + 'static,
-    Resp: Serialize + Debug + 'static,
+    Req: Serialize + 'static,
+    Resp: Serialize + 'static,
 {
     type InFlightRequest<Resp> = (usize, oneshot::Sender<Result<Resp, Error>>);
     let mut in_flight: Vec<Option<InFlightRequest<Resp>>> =
@@ -334,13 +329,16 @@ async fn handle_client_requests<Req, Resp>(
 impl<Req, Resp> Client<Req, Resp> {
     pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.req_tx.send((req, resp_tx)).await.map_err(|_| Error::Disconnected)?;
+        self.req_tx
+            .send((req, resp_tx))
+            .await
+            .map_err(|_| Error::Disconnected)?;
 
         resp_rx.await.map_err(|_| Error::Disconnected)?
     }
 }
 
-impl<Req, Resp> Debug for PeerTransport<Req, Resp> {
+impl Debug for PeerTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(
             f,

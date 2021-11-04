@@ -107,7 +107,7 @@ impl Raft {
         let mut peers = Vec::new();
         let mut peer_clients = HashMap::new();
 
-        spawn_local(introduce::<RpcRequest, RpcResponse>(
+        spawn_local(introduce(
             node_id.clone(),
             session_key.clone(),
             peers_tx,

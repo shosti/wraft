@@ -6,10 +6,7 @@ use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use js_sys::Reflect;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -62,15 +59,11 @@ impl State {
     }
 }
 
-pub async fn initiate<Req, Resp>(
+pub async fn initiate(
     node_id: &str,
     session_id: &str,
-    mut peers: Sender<PeerTransport<Req, Resp>>,
-) -> Result<(), Error>
-where
-    Req: Serialize + DeserializeOwned + Debug + 'static,
-    Resp: Serialize + DeserializeOwned + Debug + 'static,
-{
+    mut peers: Sender<PeerTransport>,
+) -> Result<(), Error> {
     let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
     let state = State::new(node_id, session_id, peer_tx);
 
