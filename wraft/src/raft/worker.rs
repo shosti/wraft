@@ -209,7 +209,7 @@ impl RaftWorker<Candidate> {
                 }
                 res = self.state.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
-                    if let StateChange::BecomeFollower = self.handle_rpc(&req, resp_tx) {
+                    if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
                         return RaftWorkerWrapper::Follower(self.into());
                     }
                 }
@@ -229,13 +229,13 @@ impl RaftWorker<Candidate> {
 
     fn handle_rpc(
         &self,
-        req: &RpcRequest,
+        req: RpcRequest,
         resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
     ) -> StateChange {
         match req {
             RpcRequest::RequestVote(req) => {
                 let new_term = self.state.persistent.update_term(req.term);
-                let resp = self.handle_request_vote(req);
+                let resp = self.handle_request_vote(&req);
                 resp_tx.send(Ok(resp)).expect("RPC response channel closed");
                 if new_term {
                     // We got a request from a higher term, switch
@@ -247,7 +247,7 @@ impl RaftWorker<Candidate> {
             }
             RpcRequest::AppendEntries(req) => {
                 self.state.persistent.update_term(req.term);
-                let resp = self.handle_append_entries(req);
+                let resp = self.handle_append_entries(&req);
                 resp_tx.send(Ok(resp)).expect("RPC response channel closed");
                 // Got a heartbeat, so we lose the election
                 console_log!("I LOSE!");
@@ -296,7 +296,6 @@ impl RaftWorker<Leader> {
     async fn next(mut self) -> RaftWorkerWrapper {
         console_log!("BEING A LEADER");
 
-        let term = self.state.persistent.current_term();
         let mut _next_indices: HashMap<NodeId, LogIndex> = HashMap::new();
         let mut _match_indices: HashMap<NodeId, LogIndex> = HashMap::new();
         let (resps_tx, mut resps_rx) = channel::<Result<RpcResponse, transport::Error>>(100);
@@ -306,54 +305,15 @@ impl RaftWorker<Leader> {
         loop {
             select! {
                 res = resps_rx.next() => {
-                    match res.expect("response channel closed") {
-                        Ok(RpcResponse::AppendEntries(resp)) => {
-                            if self.state.persistent.update_term(resp.term) {
-                                // A higher term is out there; switch to being a
-                                // follower
-                                return RaftWorkerWrapper::Follower(self.into());
-                            }
-                            if resp.success {
-                                console_log!("SUCCESSFUL THING: {:?}", resp);
-                            } else {
-                                console_log!("UNSUCCESSFUL THING: {:?}", resp);
-                            }
-                        }
-                        Err(err) => {
-                            console_log!("ERROR!!! {:?}", err);
-                        }
-                        _ => unreachable!(),
+                    let resp = res.expect("response channel closed");
+                    if let StateChange::BecomeFollower = self.handle_append_entries_response(resp) {
+                        return RaftWorkerWrapper::Follower(self.into());
                     }
                 }
                 res = self.state.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
-                    match req {
-                        RpcRequest::AppendEntries(req) => {
-                            if self.state.persistent.update_term(req.term) {
-                                let resp = self.handle_append_entries(&req);
-                                resp_tx.send(Ok(resp)).expect("response channel closed");
-                                return RaftWorkerWrapper::Follower(self.into());
-                            } else {
-                                let resp = RpcResponse::AppendEntries(AppendEntriesResponse {
-                                    term,
-                                    success: false,
-                                });
-                                resp_tx.send(Ok(resp)).expect("response channel closed");
-                            }
-                        }
-                        RpcRequest::RequestVote(req) => {
-                            if self.state.persistent.update_term(req.term) {
-                                let resp = self.handle_request_vote(&req);
-                                resp_tx.send(Ok(resp)).expect("response channel closed");
-                                return RaftWorkerWrapper::Follower(self.into());
-                            } else {
-                                let resp = RpcResponse::RequestVote(RequestVoteResponse {
-                                    term,
-                                    vote_granted: false,
-                                });
-                                resp_tx.send(Ok(resp)).expect("response channel closed");
-                            }
-                        }
+                    if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
+                        return RaftWorkerWrapper::Follower(self.into());
                     }
                 }
                 res = self.state.client_rx.next() => {
@@ -365,42 +325,101 @@ impl RaftWorker<Leader> {
                 }
                 _ = heartbeat => {
                     let empty_entries = Vec::new();
-                    for client in self.state.peer_clients.values() {
-                        self.send_append_entries(
-                            empty_entries.clone(),
-                            client.clone(),
-                            term,
-                            self.state.node_id.clone(),
-                            resps_tx.clone()
-                        );
-                    }
+                    self.send_append_entries(empty_entries, &resps_tx);
                     heartbeat = sleep(heartbeat_interval);
                 }
             }
         }
     }
 
+    fn handle_rpc(
+        &self,
+        req: RpcRequest,
+        resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
+    ) -> StateChange {
+        let term = self.state.persistent.current_term();
+        match req {
+            RpcRequest::AppendEntries(req) => {
+                if self.state.persistent.update_term(req.term) {
+                    let resp = self.handle_append_entries(&req);
+                    resp_tx.send(Ok(resp)).expect("response channel closed");
+                    return StateChange::BecomeFollower;
+                } else {
+                    let resp = RpcResponse::AppendEntries(AppendEntriesResponse {
+                        term,
+                        success: false,
+                    });
+                    resp_tx.send(Ok(resp)).expect("response channel closed");
+                }
+            }
+            RpcRequest::RequestVote(req) => {
+                if self.state.persistent.update_term(req.term) {
+                    let resp = self.handle_request_vote(&req);
+                    resp_tx.send(Ok(resp)).expect("response channel closed");
+                    return StateChange::BecomeFollower;
+                } else {
+                    let resp = RpcResponse::RequestVote(RequestVoteResponse {
+                        term,
+                        vote_granted: false,
+                    });
+                    resp_tx.send(Ok(resp)).expect("response channel closed");
+                }
+            }
+        }
+
+        StateChange::Continue
+    }
+
+    fn handle_append_entries_response(
+        &self,
+        resp: Result<RpcResponse, transport::Error>,
+    ) -> StateChange {
+        match resp {
+            Ok(RpcResponse::AppendEntries(resp)) => {
+                if self.state.persistent.update_term(resp.term) {
+                    // A higher term is out there; switch to being a
+                    // follower
+                    return StateChange::BecomeFollower;
+                }
+                if resp.success {
+                    console_log!("SUCCESSFUL THING: {:?}", resp);
+                } else {
+                    console_log!("UNSUCCESSFUL THING: {:?}", resp);
+                }
+            }
+            Err(err) => {
+                console_log!("ERROR!!! {:?}", err);
+            }
+            _ => unreachable!(),
+        }
+
+        StateChange::Continue
+    }
+
     fn send_append_entries(
         &self,
         entries: Vec<LogEntry>,
-        client: RpcClient,
-        term: u64,
-        leader_id: NodeId,
-        mut resps_tx: Sender<Result<RpcResponse, transport::Error>>,
+        resps_tx: &Sender<Result<RpcResponse, transport::Error>>,
     ) {
         let req = RpcRequest::AppendEntries(AppendEntriesRequest {
-            term,
-            leader_id,
+            term: self.state.persistent.current_term(),
+            leader_id: self.state.node_id.clone(),
             // TODO: fix all of these
             leader_commit: 0,
             prev_log_index: 0,
             prev_log_term: 0,
             entries,
         });
-        spawn_local(async move {
-            let resp = client.call(req).await;
-            let _ = resps_tx.send(resp).await;
-        });
+        for client in self.state.peer_clients.values().cloned() {
+            let r = req.clone();
+            let mut tx = resps_tx.clone();
+            spawn_local(async move {
+                let resp = client.call(r.clone()).await;
+                // If the other side is closed, we've probably changed state and
+                // it doesn't matter
+                let _ = tx.send(resp).await;
+            });
+        }
     }
 }
 
@@ -425,18 +444,22 @@ impl From<RaftWorker<Leader>> for RaftWorker<Follower> {
 
 impl From<RaftWorker<Follower>> for RaftWorker<Candidate> {
     fn from(from: RaftWorker<Follower>) -> Self {
-        Self {
+        let mut next = Self {
             state: from.state,
             _status: Candidate {},
-        }
+        };
+        next.state.leader_id = None;
+        next
     }
 }
 
 impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
     fn from(from: RaftWorker<Candidate>) -> Self {
-        Self {
+        let mut next = Self {
             state: from.state,
             _status: Leader {},
-        }
+        };
+        next.state.leader_id = Some(next.state.node_id.clone());
+        next
     }
 }
