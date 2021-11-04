@@ -161,22 +161,7 @@ impl RaftWorker<Follower> {
             select! {
                 res = self.state.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
-                    match req {
-                        RpcRequest::RequestVote(req) => {
-                            self.state.persistent.update_term(req.term);
-                            let resp = self.handle_request_vote(&req);
-                            resp_tx.send(Ok(resp)).expect("RPC response channel closed");
-                        }
-                        RpcRequest::AppendEntries(req) => {
-                            self.state.persistent.update_term(req.term);
-                            self.state.leader_id = Some(req.leader_id.clone());
-                            let resp = self.handle_append_entries(&req);
-                            resp_tx.send(Ok(resp)).expect("RPC response channel closed");
-
-                            // Got heartbeat, reset timeout
-                            timeout = self.election_timeout();
-                        }
-                    }
+                    self.handle_rpc(req, resp_tx, &mut timeout);
                 }
                 res = self.state.client_rx.next() => {
                     let (req, _resp_tx) = res.expect("Client channel closed");
@@ -186,6 +171,30 @@ impl RaftWorker<Follower> {
                     console_log!("Calling election!");
                     return RaftWorkerWrapper::Candidate(self.into());
                 }
+            }
+        }
+    }
+
+    fn handle_rpc(
+        &mut self,
+        req: RpcRequest,
+        resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
+        timeout: &mut Sleep,
+    ) {
+        match req {
+            RpcRequest::RequestVote(req) => {
+                self.state.persistent.update_term(req.term);
+                let resp = self.handle_request_vote(&req);
+                resp_tx.send(Ok(resp)).expect("RPC response channel closed");
+            }
+            RpcRequest::AppendEntries(req) => {
+                self.state.persistent.update_term(req.term);
+                self.state.leader_id = Some(req.leader_id.clone());
+                let resp = self.handle_append_entries(&req);
+                resp_tx.send(Ok(resp)).expect("RPC response channel closed");
+
+                // Got heartbeat, reset timeout
+                *timeout = self.election_timeout();
             }
         }
     }
