@@ -43,6 +43,10 @@ impl PersistentState {
         }
     }
 
+    pub fn increment_term(&self) {
+        self.set_current_term(self.current_term() + 1);
+    }
+
     pub fn _append_log(&mut self, entry: LogEntry) -> Result<(), Error> {
         self.last_log_index += 1;
         let key = self.log_key(self.last_log_index);

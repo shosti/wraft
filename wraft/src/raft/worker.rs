@@ -4,10 +4,11 @@ use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientMessage, ClientResponse, LogEntry, LogIndex,
     NodeId, RequestVoteRequest, RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
 };
-use crate::util::sleep;
+use crate::util::{sleep, Sleep};
 use crate::webrtc_rpc::transport;
 use crate::webrtc_rpc::transport::Client;
 use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
@@ -94,9 +95,9 @@ impl RaftWorkerWrapper {
 }
 
 impl<S> RaftWorker<S> {
-    fn election_timeout(&self) -> Duration {
+    fn election_timeout(&self) -> Sleep {
         let delay = thread_rng().gen_range(150..300);
-        Duration::from_millis(delay)
+        sleep(Duration::from_millis(delay))
     }
 
     fn votes_required(&self) -> usize {
@@ -138,7 +139,10 @@ impl<S> RaftWorker<S> {
 
 impl RaftWorker<Follower> {
     pub fn new(state: RaftState) -> Self {
-        Self { state, _status: Follower {} }
+        Self {
+            state,
+            _status: Follower {},
+        }
     }
 
     async fn next(mut self) -> RaftWorkerWrapper {
@@ -170,7 +174,7 @@ impl RaftWorker<Follower> {
                     let (req, _resp_tx) = res.expect("Client channel closed");
                     console_log!("WOULD FORWARD REQUEST {:?} TO {:?}", req, self.state.leader_id);
                 }
-                _ = sleep(timeout) => {
+                _ = timeout => {
                     console_log!("Calling election!");
                     return RaftWorkerWrapper::Candidate(self.into());
                 }
@@ -179,17 +183,81 @@ impl RaftWorker<Follower> {
     }
 }
 
+enum StateChange {
+    Continue,
+    BecomeFollower,
+}
+
 impl RaftWorker<Candidate> {
     async fn next(mut self) -> RaftWorkerWrapper {
         console_log!("BEING A CANDIDATE");
+        self.state.persistent.increment_term();
+        self.vote_for_self();
+        let mut votes = 1; // Voted for self
+
+        let mut votes_rx = self.request_votes();
+        let mut timeout = self.election_timeout();
+        loop {
+            select! {
+                res = votes_rx.next() => {
+                    res.expect("votes channel closed");
+                    votes += 1;
+                    if votes >= self.votes_required() {
+                        console_log!("I WIN!!!");
+                        return RaftWorkerWrapper::Leader(self.into());
+                    }
+                }
+                res = self.state.rpc_rx.next() => {
+                    let (req, resp_tx) = res.expect("RPC channel closed");
+                    if let StateChange::BecomeFollower = self.handle_rpc(&req, resp_tx) {
+                        return RaftWorkerWrapper::Follower(self.into());
+                    }
+                }
+                _ = timeout => {
+                    console_log!("ELECTION TIMED OUT");
+                    return RaftWorkerWrapper::Candidate(self);
+                }
+            }
+        }
+    }
+
+    fn vote_for_self(&self) {
         self.state
             .persistent
             .set_voted_for(Some(&self.state.node_id));
-        self.state
-            .persistent
-            .set_current_term(self.state.persistent.current_term() + 1);
+    }
 
-        let (votes_tx, mut votes_rx) = channel(self.state.cluster_size);
+    fn handle_rpc(
+        &self,
+        req: &RpcRequest,
+        resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
+    ) -> StateChange {
+        match req {
+            RpcRequest::RequestVote(req) => {
+                let new_term = self.state.persistent.update_term(req.term);
+                let resp = RpcResponse::RequestVote(self.handle_request_vote(req));
+                resp_tx.send(Ok(resp)).expect("RPC response channel closed");
+                if new_term {
+                    // We got a request from a higher term, switch
+                    // back to being a follower
+                    StateChange::BecomeFollower
+                } else {
+                    StateChange::Continue
+                }
+            }
+            RpcRequest::AppendEntries(req) => {
+                self.state.persistent.update_term(req.term);
+                let resp = RpcResponse::AppendEntries(self.handle_append_entries(req));
+                resp_tx.send(Ok(resp)).expect("RPC response channel closed");
+                // Got a heartbeat, so we lose the election
+                console_log!("I LOSE!");
+                StateChange::BecomeFollower
+            }
+        }
+    }
+
+    fn request_votes(&self) -> Receiver<()> {
+        let (votes_tx, votes_rx) = channel(self.state.cluster_size);
         let req = RpcRequest::RequestVote(RequestVoteRequest {
             term: self.state.persistent.current_term(),
             candidate: self.state.node_id.to_string(),
@@ -201,58 +269,26 @@ impl RaftWorker<Candidate> {
             let mut tx = votes_tx.clone();
             let r = req.clone();
             spawn_local(async move {
-                let resp = c.call(r).await;
-                // If channel is closed, the election is probably over so ignore
-                // the error
-                let _ = tx.send(resp).await;
+                match c.call(r).await {
+                    Ok(RpcResponse::RequestVote(resp)) if resp.vote_granted => {
+                        // If channel is closed, the election is probably over so ignore
+                        // the error
+                        let _ = tx.send(()).await;
+                    }
+                    Ok(RpcResponse::RequestVote(_)) => {
+                        // We don't really care if we didn't get a vote
+                    }
+                    Err(err) => {
+                        // We don't care too much about errors because we'll
+                        // just get another election if this one times out
+                        console_log!("Error getting vote: {:?}", err);
+                    }
+                    _ => unreachable!(),
+                };
             });
         }
 
-        let mut timeout = sleep(self.election_timeout());
-        let mut votes = 1; // Voted for self
-        loop {
-            select! {
-                res = votes_rx.next() => {
-                    if let Some(Ok(RpcResponse::RequestVote(resp))) = res {
-                        if resp.vote_granted {
-                            votes += 1;
-                        }
-                    }
-
-                    if votes >= self.votes_required() {
-                        console_log!("I WIN!!!");
-                        return RaftWorkerWrapper::Leader(self.into());
-                    }
-                }
-                res = self.state.rpc_rx.next() => {
-                    let (req, resp_tx) = res.expect("RPC channel closed");
-                    match req {
-                        RpcRequest::RequestVote(req) => {
-                            let new_term = self.state.persistent.update_term(req.term);
-                            let resp = RpcResponse::RequestVote(self.handle_request_vote(&req));
-                            resp_tx.send(Ok(resp)).expect("RPC response channel closed");
-                            if new_term {
-                                // We got a request from a higher term, switch
-                                // back to being a follower
-                                return RaftWorkerWrapper::Follower(self.into());
-                            }
-                        }
-                        RpcRequest::AppendEntries(req) => {
-                            self.state.persistent.update_term(req.term);
-                            let resp = RpcResponse::AppendEntries(self.handle_append_entries(&req));
-                            resp_tx.send(Ok(resp)).expect("RPC response channel closed");
-                            // Got a heartbeat, so we lose the election
-                            console_log!("I LOSE!");
-                            return RaftWorkerWrapper::Follower(self.into());
-                        }
-                    }
-                }
-                _ = timeout => {
-                    console_log!("ELECTION TIMED OUT");
-                    return RaftWorkerWrapper::Candidate(self);
-                }
-            }
-        }
+        votes_rx
     }
 }
 
