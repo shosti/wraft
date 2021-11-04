@@ -430,8 +430,8 @@ impl RaftWorker<Leader> {
 
 // State machine transitions
 impl From<RaftWorker<Candidate>> for RaftWorker<Follower> {
-    fn from(from: RaftWorker<Candidate>) -> RaftWorker<Follower> {
-        RaftWorker {
+    fn from(from: RaftWorker<Candidate>) -> Self {
+        Self {
             state: from.state,
             _status: Follower {},
         }
