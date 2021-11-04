@@ -35,6 +35,7 @@ pub struct PeerTransport {
     node_id: String,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
+    done: oneshot::Sender<()>,
 }
 
 #[derive(Debug)]
@@ -43,6 +44,7 @@ pub struct Server<Req, Resp> {
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
     server_req_rx: Receiver<RequestMessage<Req, Resp>>,
+    done: Option<oneshot::Sender<()>>,
 
     // Keep references to JS closures for memory-management purposes
     _onmessage_cb: Option<Closure<dyn FnMut(MessageEvent)>>,
@@ -65,9 +67,11 @@ impl PeerTransport {
         node_id: String,
         connection: RtcPeerConnection,
         data_channel: RtcDataChannel,
+        done: oneshot::Sender<()>,
     ) -> Self {
         Self {
             node_id,
+            done,
             connection,
             data_channel,
         }
@@ -86,7 +90,6 @@ impl PeerTransport {
         let (server_req_tx, server_req_rx) = channel(CHANNEL_SIZE);
 
         spawn_local(handle_client_requests(
-            self.node_id.clone(),
             client_req_rx,
             client_resp_rx,
             self.data_channel.clone(),
@@ -97,6 +100,7 @@ impl PeerTransport {
             node_id: self.node_id.clone(),
             data_channel: self.data_channel,
             connection: self.connection,
+            done: Some(self.done),
             _onmessage_cb: None,
             _onclose_cb: None,
         };
@@ -134,7 +138,6 @@ where
                 break;
             }
         }
-        console_log!("done handling requests for {}", self.node_id);
     }
 
     fn set_onmessage_callback(
@@ -172,10 +175,9 @@ where
                         }
                     }
                     msg @ Message::Response { idx: _, resp: _ } => {
-                        // Got a response to one of our requests
-                        if client_tx.send(msg).await.is_err() {
-                            console_log!("client response channel closed");
-                        }
+                        // Got a response to one of our requests, try to process
+                        // it on our end
+                        let _ = client_tx.send(msg).await;
                     }
                 }
             });
@@ -214,13 +216,14 @@ where
 
 impl<Req, Resp> Drop for Server<Req, Resp> {
     fn drop(&mut self) {
-        console_log!("dropping server for {}", self.node_id);
+        if let Some(done) = self.done.take() {
+            let _ = done.send(());
+        }
         self.connection.close();
     }
 }
 
 async fn handle_client_requests<Req, Resp>(
-    node_id: String,
     mut req_rx: Receiver<(Req, oneshot::Sender<Result<Resp, Error>>)>,
     mut resp_rx: Receiver<Message<Req, Resp>>,
     dc: RtcDataChannel,
@@ -322,11 +325,13 @@ async fn handle_client_requests<Req, Resp>(
             min_req_idx += 1;
         }
     }
-
-    console_log!("finished handling client requests for {}", node_id);
 }
 
 impl<Req, Resp> Client<Req, Resp> {
+    pub fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+
     pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.req_tx

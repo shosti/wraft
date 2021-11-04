@@ -1,18 +1,21 @@
+use crate::console_log;
 use crate::webrtc_rpc::error::Error;
 use crate::webrtc_rpc::transport::PeerTransport;
 use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use js_sys::Reflect;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
-    MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState, RtcIceCandidateInit,
-    RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
+    Event, MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState,
+    RtcIceCandidateInit, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType,
+    RtcSessionDescriptionInit, WebSocket,
 };
 use webrtc_introducer_types::{Command, IceCandidate, Join, Offer, Session};
 
@@ -25,7 +28,8 @@ type PeerInfo = (String, RtcPeerConnection, RtcDataChannel);
 struct State {
     node_id: Arc<String>,
     session_id: Arc<String>,
-    peers: Arc<RwLock<HashMap<String, Option<RtcPeerConnection>>>>,
+    peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
+    online: Arc<RwLock<HashSet<String>>>,
     peer_tx: Sender<PeerInfo>,
 }
 
@@ -35,13 +39,16 @@ impl State {
             node_id: Arc::new(node_id.to_string()),
             session_id: Arc::new(session_id.to_string()),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            online: Arc::new(RwLock::new(HashSet::new())),
             peer_tx,
         }
     }
 
     pub fn insert_peer(&self, peer_id: &str, pc: RtcPeerConnection) {
         let mut peers = self.peers.write().unwrap();
-        peers.insert(peer_id.to_string(), Some(pc));
+        let mut online = self.online.write().unwrap();
+        peers.insert(peer_id.to_string(), pc);
+        online.insert(peer_id.to_string());
     }
 
     pub async fn send_peer(&self, peer_id: &str, dc: RtcDataChannel) -> Result<(), Error> {
@@ -49,7 +56,7 @@ impl State {
         let pc;
         {
             let mut peers = self.peers.write().unwrap();
-            if let Some(p) = peers.get_mut(peer_id).expect("peer not found").take() {
+            if let Some(p) = peers.remove(peer_id) {
                 pc = p;
             } else {
                 panic!("peer {} sent twice", peer_id);
@@ -69,15 +76,23 @@ pub async fn initiate(
     let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
     let state = State::new(node_id, session_id, peer_tx);
 
-    let (ws, mut errors_rx) = init_ws(state).await?;
+    let (ws, mut errors_rx) = init_ws(&state).await?;
     wait_for_ws_opened(ws.clone()).await;
     send_join_command(node_id, session_id, ws).await?;
 
     loop {
         select! {
             p = peer_rx.next() => {
+                let (done_tx, done_rx) = oneshot::channel();
                 let (peer_id, dc, pc) = p.unwrap();
-                let peer = PeerTransport::new(peer_id.clone(), dc, pc);
+                let peer = PeerTransport::new(peer_id.clone(), dc, pc, done_tx);
+
+                let online = state.online.clone();
+                spawn_local(async move {
+                    done_rx.await.expect("peer transport done channel dropped");
+                    let mut o = online.write().unwrap();
+                    o.remove(&peer_id);
+                });
                 peers.send(peer).await?;
             }
             err = errors_rx.next() => return Err(err.unwrap()),
@@ -103,12 +118,13 @@ async fn handle_message(e: MessageEvent, ws: WebSocket, state: State) -> Result<
 }
 
 async fn handle_session_update(session: Session, ws: WebSocket, state: State) -> Result<(), Error> {
+    console_log!("SESSION UPDATE, ONLINE: {:?}", session.online);
     let mut introductions = session
         .online
         .iter()
         .filter(|&p| {
-            let peers = state.peers.read().unwrap();
-            p > &*state.node_id && !peers.contains_key(p)
+            let online = state.online.read().unwrap();
+            p > &*state.node_id && !online.contains(p)
         })
         .map(|p| {
             let peer = p.clone();
@@ -202,13 +218,11 @@ async fn handle_answer(answer: Offer, state: State) -> Result<(), Error> {
     let pc;
     {
         let peers = state.peers.read().unwrap();
-        let pc_opt = peers
-            .get(&answer.node_id)
-            .ok_or_else(|| Error::String(format!("No connection found for {}", &answer.node_id)))?;
+        let pc_opt = peers.get(&answer.node_id);
         if let Some(p) = pc_opt {
             pc = p.clone();
         } else {
-            return Err(Error::AlreadyInitialized(answer.node_id.clone()))
+            return Err(Error::AlreadyInitialized(answer.node_id.clone()));
         }
     }
     let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
@@ -222,9 +236,7 @@ async fn handle_ice_candidate(candidate: IceCandidate, state: State) -> Result<(
     let add_ice_promise;
     {
         let peers = state.peers.read().unwrap();
-        let pc_opt = peers.get(&candidate.node_id).ok_or_else(|| {
-            Error::String(format!("No connection found for {}", candidate.node_id))
-        })?;
+        let pc_opt = peers.get(&candidate.node_id);
         if let Some(pc) = pc_opt {
             let mut cand = RtcIceCandidateInit::new(&candidate.candidate);
             if let Some(sdp_mid) = candidate.sdp_mid {
@@ -234,7 +246,12 @@ async fn handle_ice_candidate(candidate: IceCandidate, state: State) -> Result<(
             }
             add_ice_promise = pc.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&cand));
         } else {
-            return Err(Error::AlreadyInitialized(candidate.node_id.clone()));
+            // Can't really be an error because it happens "normally" sometimes
+            console_log!(
+                "got ICE candidate for {} but it's already initialized",
+                candidate.node_id
+            );
+            return Ok(());
         }
     }
     JsFuture::from(add_ice_promise).await?;
@@ -258,16 +275,17 @@ async fn wait_for_ws_opened(ws: WebSocket) {
     ws.set_onopen(None);
 }
 
-async fn init_ws(state: State) -> Result<(WebSocket, Receiver<Error>), Error> {
+async fn init_ws(state: &State) -> Result<(WebSocket, Receiver<Error>), Error> {
     let ws = WebSocket::new(INTRODUCER)?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
     let (errors_tx, errors_rx) = channel::<Error>(10);
 
     let w0 = ws.clone();
+    let message_state = state.clone();
     let message_cb = Closure::wrap(Box::new(move |e: MessageEvent| {
         let mut errors = errors_tx.clone();
-        let s = state.clone();
+        let s = message_state.clone();
         let w1 = w0.clone();
         spawn_local(async move {
             match handle_message(e, w1.clone(), s.clone()).await {
@@ -281,6 +299,12 @@ async fn init_ws(state: State) -> Result<(WebSocket, Receiver<Error>), Error> {
 
     ws.set_onmessage(Some(message_cb.as_ref().unchecked_ref()));
     message_cb.forget();
+
+    let onerror_cb = Closure::wrap(Box::new(move |ev: Event| {
+        console_log!("WEBSOCKET ERROR: {:?}", ev);
+    }) as Box<dyn FnMut(Event)>);
+    ws.set_onerror(Some(onerror_cb.as_ref().unchecked_ref()));
+    onerror_cb.forget();
 
     Ok((ws, errors_rx))
 }

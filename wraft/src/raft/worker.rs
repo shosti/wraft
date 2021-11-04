@@ -6,8 +6,7 @@ use crate::raft::{
     NodeId, RequestVoteRequest, RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
 };
 use crate::util::{sleep, Sleep};
-use crate::webrtc_rpc::transport;
-use crate::webrtc_rpc::transport::Client;
+use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::select;
@@ -55,6 +54,7 @@ struct RaftState {
     client_rx: Receiver<ClientMessage>,
     rpc_rx: Receiver<RpcMessage>,
     rpc_server: RpcServer,
+    peers_rx: Receiver<PeerTransport>,
 
     // Volatile state
     commit_index: u64,
@@ -71,6 +71,7 @@ pub async fn run(
     session_key: String,
     rpc_rx: Receiver<RpcMessage>,
     client_rx: Receiver<ClientMessage>,
+    peers_rx: Receiver<PeerTransport>,
     peer_clients: HashMap<NodeId, RpcClient>,
     rpc_server: RpcServer,
 ) {
@@ -85,6 +86,7 @@ pub async fn run(
         peer_clients,
         rpc_rx,
         client_rx,
+        peers_rx,
         rpc_server,
         commit_index: 0,
         last_applied: 0,
@@ -147,6 +149,18 @@ impl<S> RaftWorker<S> {
             success: true,
         })
     }
+
+    fn handle_new_peer(&mut self, peer: PeerTransport) {
+        let (client, mut server) = peer.start();
+        let peer_id = client.node_id();
+        console_log!("Got new peer: {}", peer_id);
+
+        let s = self.state.rpc_server.clone();
+        spawn_local(async move {
+            server.serve(s).await;
+        });
+        self.state.peer_clients.insert(client.node_id(), client);
+    }
 }
 
 impl RaftWorker<Follower> {
@@ -170,6 +184,9 @@ impl RaftWorker<Follower> {
                 res = self.state.client_rx.next() => {
                     let (req, _resp_tx) = res.expect("Client channel closed");
                     console_log!("WOULD FORWARD REQUEST {:?} TO {:?}", req, self.state.leader_id);
+                }
+                res = self.state.peers_rx.next() => {
+                    self.handle_new_peer(res.expect("peer channel closed"));
                 }
                 _ = timeout => {
                     console_log!("Calling election!");
@@ -216,11 +233,12 @@ impl RaftWorker<Candidate> {
         loop {
             select! {
                 res = votes_rx.next() => {
-                    res.expect("votes channel closed");
-                    votes += 1;
-                    if votes >= self.votes_required() {
-                        console_log!("I WIN!!!");
-                        return RaftWorkerState::Leader(self.into());
+                    if res.is_some() {
+                        votes += 1;
+                        if votes >= self.votes_required() {
+                            console_log!("I WIN!!!");
+                            return RaftWorkerState::Leader(self.into());
+                        }
                     }
                 }
                 res = self.state.rpc_rx.next() => {
@@ -399,11 +417,11 @@ impl RaftWorker<Leader> {
                     // follower
                     return StateChange::BecomeFollower;
                 }
-                if resp.success {
-                    console_log!("SUCCESSFUL THING: {:?}", resp);
-                } else {
-                    console_log!("UNSUCCESSFUL THING: {:?}", resp);
-                }
+                // if resp.success {
+                //     console_log!("successful thing: {:?}", resp);
+                // } else {
+                //     console_log!("unsuccessful thing: {:?}", resp);
+                // }
             }
             Err(err) => {
                 console_log!("ERROR!!! {:?}", err);

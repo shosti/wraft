@@ -135,6 +135,7 @@ impl Raft {
             session_key.clone(),
             rpc_rx,
             client_rx,
+            peers_rx,
             peer_clients,
             rpc_server,
         ));

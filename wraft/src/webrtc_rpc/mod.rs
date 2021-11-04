@@ -16,7 +16,6 @@ pub mod error {
     pub enum Error {
         Js(JsValue),
         Rust(Box<dyn std::error::Error>),
-        String(String),
         AlreadyInitialized(String),
     }
 
