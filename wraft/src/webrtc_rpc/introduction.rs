@@ -1,4 +1,3 @@
-use crate::console_log;
 use crate::webrtc_rpc::error::Error;
 use crate::webrtc_rpc::transport::PeerTransport;
 use futures::channel::mpsc::{channel, Receiver, Sender};
@@ -13,8 +12,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
     MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState, RtcIceCandidateInit,
-    RtcIceConnectionState, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType,
-    RtcSessionDescriptionInit, WebSocket,
+    RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType, RtcSessionDescriptionInit, WebSocket,
 };
 use webrtc_introducer_types::{Command, IceCandidate, Join, Offer, Session};
 
@@ -151,13 +149,12 @@ fn new_peer_connection(
     let pc = RtcPeerConnection::new()?;
     let session_id = state.session_id.to_string();
     let node_id = state.node_id.to_string();
-    let pid = peer_id.clone();
     let ice_cb = Closure::wrap(Box::new(move |ev: RtcPeerConnectionIceEvent| {
         if let Some(candidate) = ev.candidate() {
             let cmd = Command::IceCandidate(IceCandidate {
                 session_id: session_id.clone(),
                 node_id: node_id.clone(),
-                target_id: pid.clone(),
+                target_id: peer_id.clone(),
                 candidate: candidate.candidate(),
                 sdp_mid: candidate.sdp_mid(),
             });
@@ -166,21 +163,6 @@ fn new_peer_connection(
     }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>);
     pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
     ice_cb.forget();
-
-    let cs_pc = pc.clone();
-    let cs_cb = Closure::wrap(Box::new(move || {
-        let ice_state = cs_pc.ice_connection_state();
-        if ice_state == RtcIceConnectionState::Failed
-            || ice_state == RtcIceConnectionState::Disconnected
-            || ice_state == RtcIceConnectionState::Closed
-        {
-            console_log!("Lost ICE connection for {}", peer_id);
-            let mut peers = state.peers.write().unwrap();
-            peers.remove(&peer_id);
-        }
-    }) as Box<dyn FnMut()>);
-    pc.set_oniceconnectionstatechange(Some(cs_cb.as_ref().unchecked_ref()));
-    cs_cb.forget();
 
     Ok(pc)
 }
