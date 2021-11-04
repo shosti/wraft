@@ -36,6 +36,11 @@ struct Leader {}
 
 type RpcClient = Client<RpcRequest, RpcResponse>;
 
+enum StateChange {
+    Continue,
+    BecomeFollower,
+}
+
 #[derive(Debug)]
 struct RaftState {
     leader_id: Option<NodeId>,
@@ -104,7 +109,7 @@ impl<S> RaftWorker<S> {
         (self.state.cluster_size / 2) + 1
     }
 
-    fn handle_request_vote(&self, req: &RequestVoteRequest) -> RequestVoteResponse {
+    fn handle_request_vote(&self, req: &RequestVoteRequest) -> RpcResponse {
         let voted_for = self.state.persistent.voted_for();
         let current_term = self.state.persistent.current_term();
         if req.term >= current_term
@@ -113,27 +118,27 @@ impl<S> RaftWorker<S> {
         {
             self.state.persistent.set_voted_for(Some(&req.candidate));
 
-            RequestVoteResponse {
+            RpcResponse::RequestVote(RequestVoteResponse {
                 term: req.last_log_term,
                 vote_granted: true,
-            }
+            })
         } else {
-            RequestVoteResponse {
+            RpcResponse::RequestVote(RequestVoteResponse {
                 term: 0,
                 vote_granted: false,
-            }
+            })
         }
     }
 
-    fn handle_append_entries(&self, _req: &AppendEntriesRequest) -> AppendEntriesResponse {
+    fn handle_append_entries(&self, _req: &AppendEntriesRequest) -> RpcResponse {
         let term = self.state.persistent.current_term();
 
         // TODO: append the actual entries
 
-        AppendEntriesResponse {
+        RpcResponse::AppendEntries(AppendEntriesResponse {
             term,
             success: true,
-        }
+        })
     }
 }
 
@@ -156,13 +161,13 @@ impl RaftWorker<Follower> {
                     match req {
                         RpcRequest::RequestVote(req) => {
                             self.state.persistent.update_term(req.term);
-                            let resp = RpcResponse::RequestVote(self.handle_request_vote(&req));
+                            let resp = self.handle_request_vote(&req);
                             resp_tx.send(Ok(resp)).expect("RPC response channel closed");
                         }
                         RpcRequest::AppendEntries(req) => {
                             self.state.persistent.update_term(req.term);
                             self.state.leader_id = Some(req.leader_id.clone());
-                            let resp = RpcResponse::AppendEntries(self.handle_append_entries(&req));
+                            let resp = self.handle_append_entries(&req);
                             resp_tx.send(Ok(resp)).expect("RPC response channel closed");
 
                             // Got heartbeat, reset timeout
@@ -181,11 +186,6 @@ impl RaftWorker<Follower> {
             }
         }
     }
-}
-
-enum StateChange {
-    Continue,
-    BecomeFollower,
 }
 
 impl RaftWorker<Candidate> {
@@ -235,7 +235,7 @@ impl RaftWorker<Candidate> {
         match req {
             RpcRequest::RequestVote(req) => {
                 let new_term = self.state.persistent.update_term(req.term);
-                let resp = RpcResponse::RequestVote(self.handle_request_vote(req));
+                let resp = self.handle_request_vote(req);
                 resp_tx.send(Ok(resp)).expect("RPC response channel closed");
                 if new_term {
                     // We got a request from a higher term, switch
@@ -247,7 +247,7 @@ impl RaftWorker<Candidate> {
             }
             RpcRequest::AppendEntries(req) => {
                 self.state.persistent.update_term(req.term);
-                let resp = RpcResponse::AppendEntries(self.handle_append_entries(req));
+                let resp = self.handle_append_entries(req);
                 resp_tx.send(Ok(resp)).expect("RPC response channel closed");
                 // Got a heartbeat, so we lose the election
                 console_log!("I LOSE!");
@@ -330,7 +330,7 @@ impl RaftWorker<Leader> {
                     match req {
                         RpcRequest::AppendEntries(req) => {
                             if self.state.persistent.update_term(req.term) {
-                                let resp = RpcResponse::AppendEntries(self.handle_append_entries(&req));
+                                let resp = self.handle_append_entries(&req);
                                 resp_tx.send(Ok(resp)).expect("response channel closed");
                                 return RaftWorkerWrapper::Follower(self.into());
                             } else {
@@ -343,7 +343,7 @@ impl RaftWorker<Leader> {
                         }
                         RpcRequest::RequestVote(req) => {
                             if self.state.persistent.update_term(req.term) {
-                                let resp = RpcResponse::RequestVote(self.handle_request_vote(&req));
+                                let resp = self.handle_request_vote(&req);
                                 resp_tx.send(Ok(resp)).expect("response channel closed");
                                 return RaftWorkerWrapper::Follower(self.into());
                             } else {
