@@ -1,5 +1,6 @@
 use crate::console_log;
 use crate::raft::persistence::PersistentState;
+use crate::raft::rpc_server::RpcServer;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientMessage, ClientResponse, LogEntry, LogIndex,
     NodeId, RequestVoteRequest, RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
@@ -53,6 +54,7 @@ struct RaftState {
     peer_clients: HashMap<NodeId, RpcClient>,
     client_rx: Receiver<ClientMessage>,
     rpc_rx: Receiver<RpcMessage>,
+    rpc_server: RpcServer,
 
     // Volatile state
     commit_index: u64,
@@ -70,6 +72,7 @@ pub async fn run(
     rpc_rx: Receiver<RpcMessage>,
     client_rx: Receiver<ClientMessage>,
     peer_clients: HashMap<NodeId, RpcClient>,
+    rpc_server: RpcServer,
 ) {
     let cluster_size = peer_clients.len();
     let persistent = PersistentState::new(&session_key);
@@ -82,6 +85,7 @@ pub async fn run(
         peer_clients,
         rpc_rx,
         client_rx,
+        rpc_server,
         commit_index: 0,
         last_applied: 0,
     };
@@ -277,7 +281,7 @@ impl RaftWorker<Candidate> {
             last_log_term: self.state.persistent.last_log_term(),
         });
         for client in self.state.peer_clients.values() {
-            let c = client.clone();
+            let mut c = client.clone();
             let mut tx = votes_tx.clone();
             let r = req.clone();
             spawn_local(async move {
@@ -424,7 +428,7 @@ impl RaftWorker<Leader> {
             prev_log_term: 0,
             entries,
         });
-        for client in self.state.peer_clients.values().cloned() {
+        for mut client in self.state.peer_clients.values().cloned() {
             let r = req.clone();
             let mut tx = resps_tx.clone();
             spawn_local(async move {

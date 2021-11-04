@@ -119,8 +119,9 @@ impl Raft {
             console_log!("Got client: {}", peer.node_id());
 
             let peer_id = peer.node_id().clone();
-            peer_clients.insert(peer_id, peer.client());
-            peers.push(peer);
+            let (client, server) = peer.start();
+            peer_clients.insert(peer_id, client);
+            peers.push(server);
         }
 
         let (rpc_tx, rpc_rx) = channel(100);
@@ -139,6 +140,7 @@ impl Raft {
             rpc_rx,
             client_rx,
             peer_clients,
+            rpc_server,
         ));
 
         Ok(Self { client_tx })

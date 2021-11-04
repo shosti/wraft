@@ -7,7 +7,7 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
+use std::marker::PhantomData;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -18,8 +18,7 @@ const CHANNEL_SIZE: usize = 1024;
 const MAX_IN_FLIGHT_REQUESTS: usize = 1024;
 const REQUEST_TIMEOUT_MILLIS: u64 = 1000;
 
-type RequestSender<Req, Resp> = Sender<(Req, oneshot::Sender<Result<Resp, Error>>)>;
-type RequestReceiver<Req, Resp> = Receiver<(Req, oneshot::Sender<Result<Resp, Error>>)>;
+type RequestMessage<Req, Resp> = (Req, oneshot::Sender<Result<Resp, Error>>);
 
 #[derive(Serialize, Deserialize)]
 enum Message<Req, Resp> {
@@ -33,28 +32,30 @@ enum Message<Req, Resp> {
     },
 }
 
-#[derive(Clone, Debug)]
-pub enum Status {
-    Connected,
-    Closed,
-}
-
 pub struct PeerTransport<Req, Resp> {
     node_id: String,
+    connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
-    status: Arc<RwLock<Status>>,
-    client_req_tx: RequestSender<Req, Resp>,
-    server_req_rx: RequestReceiver<Req, Resp>,
-    _connection: RtcPeerConnection,
+    _request: PhantomData<Req>,
+    _response: PhantomData<Resp>,
+}
+
+#[derive(Debug)]
+pub struct Server<Req, Resp> {
+    node_id: String,
+    connection: RtcPeerConnection,
+    data_channel: RtcDataChannel,
+    server_req_rx: Receiver<RequestMessage<Req, Resp>>,
+
+    // Keep references to JS closures for memory-management purposes
     _onmessage_cb: Closure<dyn FnMut(MessageEvent)>,
     _onclose_cb: Closure<dyn FnMut()>,
-    _onerror_cb: Closure<dyn FnMut()>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
-    status: Arc<RwLock<Status>>,
-    req_tx: RequestSender<Req, Resp>,
+    node_id: String,
+    req_tx: Sender<RequestMessage<Req, Resp>>,
 }
 
 #[async_trait]
@@ -72,7 +73,17 @@ where
         connection: RtcPeerConnection,
         data_channel: RtcDataChannel,
     ) -> Self {
-        data_channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
+        Self {
+            node_id,
+            connection,
+            data_channel,
+            _request: PhantomData,
+            _response: PhantomData,
+        }
+    }
+
+    pub fn start(self) -> (Client<Req, Resp>, Server<Req, Resp>) {
+        self.data_channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
 
         let (client_req_tx, client_req_rx) = channel(CHANNEL_SIZE);
         let (client_resp_tx, client_resp_rx) = channel(CHANNEL_SIZE);
@@ -81,46 +92,42 @@ where
         spawn_local(handle_client_requests(
             client_req_rx,
             client_resp_rx,
-            data_channel.clone(),
+            self.data_channel.clone(),
         ));
-        let onmessage_cb =
-            Self::onmessage_callback(client_resp_tx, server_req_tx, data_channel.clone());
-        data_channel.set_onmessage(Some(onmessage_cb.as_ref().unchecked_ref()));
 
-        let status = Arc::new(RwLock::new(Status::Connected));
-        let s = status.clone();
-        let nid = node_id.clone();
-        let onclose_cb = Closure::wrap(Box::new(move || {
-            console_log!("lost data channel for {}", nid);
-            let mut status = s.write().unwrap();
-            *status = Status::Closed;
-        }) as Box<dyn FnMut()>);
-        data_channel.set_onclose(Some(onclose_cb.as_ref().unchecked_ref()));
+        let onclose_cb = self.set_onclose_callback(
+            client_req_tx.clone(),
+            client_resp_tx.clone(),
+            server_req_tx.clone(),
+        );
 
-        let onerror_cb = Closure::wrap(Box::new(move || {
-            console_log!("GOT ONERROR!!!");
-        }) as Box<dyn FnMut()>);
-        data_channel.set_onerror(Some(onerror_cb.as_ref().unchecked_ref()));
+        let onmessage_cb = self.set_onmessage_callback(client_resp_tx, server_req_tx);
 
-        Self {
-            status,
-            node_id,
-            data_channel,
-            client_req_tx,
+        let server = Server {
             server_req_rx,
+            node_id: self.node_id.clone(),
+            data_channel: self.data_channel,
+            connection: self.connection,
             _onmessage_cb: onmessage_cb,
-            _connection: connection,
             _onclose_cb: onclose_cb,
-            _onerror_cb: onerror_cb,
-        }
+        };
+
+        let client = Client {
+            node_id: self.node_id,
+            req_tx: client_req_tx,
+        };
+
+        (client, server)
     }
 
-    fn onmessage_callback(
+    fn set_onmessage_callback(
+        &self,
         client_resp_tx: Sender<Message<Req, Resp>>,
-        server_req_tx: RequestSender<Req, Resp>,
-        data_channel: RtcDataChannel,
+        server_req_tx: Sender<RequestMessage<Req, Resp>>,
     ) -> Closure<dyn FnMut(MessageEvent)> {
-        Closure::wrap(Box::new(move |ev: MessageEvent| {
+        let data_channel = self.data_channel.clone();
+
+        let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
             let mut client_tx = client_resp_tx.clone();
             let mut server_tx = server_req_tx.clone();
             let dc = data_channel.clone();
@@ -156,25 +163,62 @@ where
                     }
                 }
             });
-        }) as Box<dyn FnMut(MessageEvent)>)
+        }) as Box<dyn FnMut(MessageEvent)>);
+
+        self.data_channel
+            .set_onmessage(Some(cb.as_ref().unchecked_ref()));
+
+        cb
+    }
+
+    fn set_onclose_callback(
+        &self,
+        mut client_req_tx: Sender<RequestMessage<Req, Resp>>,
+        mut client_resp_tx: Sender<Message<Req, Resp>>,
+        mut server_req_tx: Sender<RequestMessage<Req, Resp>>,
+    ) -> Closure<dyn FnMut()> {
+        let node_id = self.node_id.clone();
+
+        let cb = Closure::once(move || {
+            console_log!("lost data channel for {}", node_id);
+
+            // Close channels and hope all the listeners clean up nicely after
+            // themselves :)
+            client_req_tx.close_channel();
+            client_resp_tx.close_channel();
+            server_req_tx.close_channel();
+        });
+
+        self.data_channel
+            .set_onclose(Some(cb.as_ref().unchecked_ref()));
+
+        cb
     }
 
     pub fn node_id(&self) -> String {
         self.node_id.clone()
     }
+}
 
+impl<Req, Resp> Server<Req, Resp>
+where
+    Resp: Debug,
+{
     pub async fn serve(&mut self, handler: impl RequestHandler<Req, Resp> + 'static) {
         while let Some((req, tx)) = self.server_req_rx.next().await {
             let resp = handler.handle(req).await;
-            tx.send(resp).unwrap();
+            if tx.send(resp).is_err() {
+                // Server is down, so we're done serving requests
+                break;
+            }
         }
+        console_log!("done handling requests for {}", self.node_id);
     }
+}
 
-    pub fn client(&self) -> Client<Req, Resp> {
-        Client {
-            status: self.status.clone(),
-            req_tx: self.client_req_tx.clone(),
-        }
+impl<Req, Resp> Drop for Server<Req, Resp> {
+    fn drop(&mut self) {
+        self.connection.close();
     }
 }
 
@@ -274,26 +318,14 @@ async fn handle_client_requests<Req, Resp>(
 }
 
 impl<Req, Resp> Client<Req, Resp> {
-    pub async fn call(&self, req: Req) -> Result<Resp, Error> {
-        if let Status::Closed = self.get_status() {
+    pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
+        if self.req_tx.is_closed() {
             return Err(Error::Disconnected);
         }
         let (resp_tx, resp_rx) = oneshot::channel();
-        let mut tx = self.req_tx.clone();
-        tx.send((req, resp_tx)).await.unwrap();
+        self.req_tx.send((req, resp_tx)).await.unwrap();
 
         resp_rx.await.unwrap()
-    }
-
-    pub fn get_status(&self) -> Status {
-        let s = self.status.read().unwrap();
-        s.clone()
-    }
-}
-
-impl<Req, Resp> Drop for PeerTransport<Req, Resp> {
-    fn drop(&mut self) {
-        self.data_channel.set_onmessage(None);
     }
 }
 
