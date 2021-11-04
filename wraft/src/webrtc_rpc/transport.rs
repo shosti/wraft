@@ -83,13 +83,15 @@ where
     }
 
     pub fn start(self) -> (Client<Req, Resp>, Server<Req, Resp>) {
-        self.data_channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
+        self.data_channel
+            .set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
 
         let (client_req_tx, client_req_rx) = channel(CHANNEL_SIZE);
         let (client_resp_tx, client_resp_rx) = channel(CHANNEL_SIZE);
         let (server_req_tx, server_req_rx) = channel(CHANNEL_SIZE);
 
         spawn_local(handle_client_requests(
+            self.node_id.clone(),
             client_req_rx,
             client_resp_rx,
             self.data_channel.clone(),
@@ -142,24 +144,23 @@ where
                     Message::Request { idx, req } => {
                         // Got a request from the other side's client
                         let (tx, rx) = oneshot::channel();
-                        server_tx
-                            .send((req, tx))
-                            .await
-                            .expect("server request channel closed");
-                        let resp = rx.await.expect("channel closed");
-
-                        let msg: Message<Req, Resp> = Message::Response { idx, resp };
-                        let data = bincode::serialize(&msg).unwrap();
-                        if let Err(err) = dc.send_with_u8_array(&data) {
-                            console_log!("error sending data: {:?}", err);
+                        if server_tx.send((req, tx)).await.is_err() {
+                            console_log!("server request channel closed");
+                            return;
+                        }
+                        if let Ok(resp) = rx.await {
+                            let msg: Message<Req, Resp> = Message::Response { idx, resp };
+                            let data = bincode::serialize(&msg).unwrap();
+                            if let Err(err) = dc.send_with_u8_array(&data) {
+                                console_log!("error sending data: {:?}", err);
+                            }
                         }
                     }
                     msg @ Message::Response { idx: _, resp: _ } => {
                         // Got a response to one of our requests
-                        client_tx
-                            .send(msg)
-                            .await
-                            .expect("client response channel closed");
+                        if client_tx.send(msg).await.is_err() {
+                            console_log!("client response channel closed");
+                        }
                     }
                 }
             });
@@ -218,11 +219,13 @@ where
 
 impl<Req, Resp> Drop for Server<Req, Resp> {
     fn drop(&mut self) {
+        console_log!("dropping server for {}", self.node_id);
         self.connection.close();
     }
 }
 
 async fn handle_client_requests<Req, Resp>(
+    node_id: String,
     mut req_rx: Receiver<(Req, oneshot::Sender<Result<Resp, Error>>)>,
     mut resp_rx: Receiver<Message<Req, Resp>>,
     dc: RtcDataChannel,
@@ -241,10 +244,13 @@ async fn handle_client_requests<Req, Resp>(
     loop {
         select! {
             res = req_rx.next() => {
-                let (req, tx) = res.expect("client request channel is closed");
+                if res.is_none() {
+                    break;
+                }
+                let (req, tx) = res.unwrap();
                 let idx = next_req_idx;
                 if idx - min_req_idx >= MAX_IN_FLIGHT_REQUESTS {
-                    tx.send(Err(Error::TooManyInFlightRequests)).unwrap();
+                    let _ = tx.send(Err(Error::TooManyInFlightRequests));
                     continue;
                 }
 
@@ -255,7 +261,7 @@ async fn handle_client_requests<Req, Resp>(
 
                 let data = bincode::serialize(&msg).unwrap();
                 if let Err(err) = dc.send_with_u8_array(&data) {
-                    tx.send(Err(Error::from(err))).unwrap();
+                    let _ = tx.send(Err(Error::from(err)));
                     continue;
                 }
 
@@ -265,11 +271,14 @@ async fn handle_client_requests<Req, Resp>(
                 let mut tx = timeout_tx.clone();
                 spawn_local(async move {
                     sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
-                    tx.send(idx).await.unwrap();
+                    let _ = tx.send(idx).await;
                 });
             }
             res = resp_rx.next() => {
-                let msg = res.expect("client response channel is closed");
+                if res.is_none() {
+                    break;
+                }
+                let msg = res.unwrap();
                 if let Message::Response { idx, resp } = msg {
                     let tx_opt = in_flight
                         .get_mut(idx % MAX_IN_FLIGHT_REQUESTS)
@@ -298,14 +307,17 @@ async fn handle_client_requests<Req, Resp>(
                 }
             }
             res = timeout_rx.next() => {
-                let idx = res.expect("timeout channel closed");
+                if res.is_none() {
+                    break;
+                }
+                let idx = res.unwrap();
                 let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
                 in_flight.push(None);
 
                 if let Some((i, tx)) = tx_opt {
                     assert_eq!(i, idx, "unexpected response sender in timeout");
                     console_log!("request {} timed out", idx);
-                    tx.send(Err(Error::RequestTimeout)).unwrap();
+                    let _ = tx.send(Err(Error::RequestTimeout));
                 }
             }
         }
@@ -315,17 +327,16 @@ async fn handle_client_requests<Req, Resp>(
             min_req_idx += 1;
         }
     }
+
+    console_log!("finished handling client requests for {}", node_id);
 }
 
 impl<Req, Resp> Client<Req, Resp> {
     pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
-        if self.req_tx.is_closed() {
-            return Err(Error::Disconnected);
-        }
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.req_tx.send((req, resp_tx)).await.unwrap();
+        self.req_tx.send((req, resp_tx)).await.map_err(|_| Error::Disconnected)?;
 
-        resp_rx.await.unwrap()
+        resp_rx.await.map_err(|_| Error::Disconnected)?
     }
 }
 
