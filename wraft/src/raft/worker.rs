@@ -64,8 +64,6 @@ struct RaftState {
     persistent: PersistentState,
 }
 
-impl RaftState {}
-
 pub async fn run(
     node_id: NodeId,
     session_key: String,
