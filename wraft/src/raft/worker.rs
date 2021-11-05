@@ -53,12 +53,18 @@ struct RaftState {
     node_id: NodeId,
     session_key: String,
     cluster_size: usize,
-    peer_clients: HashMap<NodeId, RpcClient>,
     client_rx: Receiver<ClientMessage>,
     rpc_rx: Receiver<RpcMessage>,
     rpc_server: RpcServer,
     peers_rx: Receiver<PeerTransport>,
     debug_tx: Sender<RaftDebugState>,
+    current_state: HashMap<String, String>,
+
+    // Peers is constant throughout the runtime (regardless of whether they're
+    // online or not)
+    peers: Vec<NodeId>,
+    // Peer clients could connect/disconnect
+    peer_clients: HashMap<NodeId, RpcClient>,
 
     // Volatile state
     commit_index: u64,
@@ -76,12 +82,13 @@ pub struct RaftDebugState {
     session_key: String,
     cluster_size: usize,
     peers: Vec<NodeId>,
+    online_peers: Vec<NodeId>,
     voted_for: Option<NodeId>,
     current_term: u64,
 
     commit_index: u64,
     last_applied: u64,
-    snapshot: HashMap<String, String>,
+    current_state: HashMap<String, String>,
 }
 
 pub fn run(
@@ -97,6 +104,7 @@ pub fn run(
 
     let cluster_size = peer_clients.len();
     let persistent = PersistentState::new(&session_key);
+    let peers = peer_clients.keys().cloned().collect();
     let state = RaftState {
         leader_id: None,
         persistent,
@@ -104,11 +112,13 @@ pub fn run(
         session_key,
         cluster_size,
         peer_clients,
+        peers,
         rpc_rx,
         client_rx,
         peers_rx,
         rpc_server,
         debug_tx,
+        current_state: HashMap::new(),
         commit_index: 0,
         last_applied: 0,
     };
@@ -530,7 +540,7 @@ impl RaftWorker<Leader> {
         key: &str,
         client_resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
     ) {
-        let val = self.state.persistent.get(key);
+        let val = self.state.current_state.get(key).cloned();
         let resp = ClientResponse::Get(val);
         let _ = client_resp_tx.send(Ok(resp));
     }
@@ -591,7 +601,8 @@ where
             node_id: from.state.node_id.clone(),
             session_key: from.state.session_key.clone(),
             cluster_size: from.state.cluster_size,
-            peers: from
+            peers: from.state.peers.clone(),
+            online_peers: from
                 .state
                 .peer_clients
                 .iter()
@@ -603,7 +614,8 @@ where
 
             commit_index: from.state.commit_index,
             last_applied: from.state.last_applied,
-            snapshot: from.state.persistent.snapshot(),
+            // TODO: This is way too expensive
+            current_state: from.state.current_state.clone(),
         }
     }
 }

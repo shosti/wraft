@@ -38,35 +38,7 @@ impl PersistentState {
             state.last_log_index = idx.parse().unwrap();
         }
 
-        state.init_snapshot();
-
         state
-    }
-
-    // TODO: this is just for debugging, much to expensive for real usage
-    pub fn snapshot(&self) -> HashMap<String, String> {
-        self.snapshot.clone()
-    }
-
-    pub fn get(&self, key: &str) -> Option<String> {
-        self.snapshot.get(key).cloned()
-    }
-
-    fn init_snapshot(&mut self) {
-        for idx in 1..=self.last_log_index {
-            self.play_log(idx);
-        }
-    }
-
-    fn play_log(&mut self, idx: LogIndex) {
-        match self.get_log(idx).unwrap().cmd {
-            LogCmd::Set { key, data } => {
-                self.snapshot.insert(key, data);
-            }
-            LogCmd::Delete { key } => {
-                self.snapshot.remove(&key);
-            }
-        }
     }
 
     pub fn last_log_index(&self) -> LogIndex {
