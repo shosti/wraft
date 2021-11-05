@@ -41,21 +41,23 @@ pub struct Raft {
 pub enum RpcRequest {
     AppendEntries(AppendEntriesRequest),
     RequestVote(RequestVoteRequest),
+    ForwardClientRequest(ClientRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RpcResponse {
     AppendEntries(AppendEntriesResponse),
     RequestVote(RequestVoteResponse),
+    ForwardClientRequest(Result<ClientResponse, ClientError>),
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientRequest {
     Get(String),
     Set(String, String),
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientResponse {
     Ack,
     Get(Option<String>),

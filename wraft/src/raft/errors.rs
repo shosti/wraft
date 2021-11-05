@@ -1,4 +1,5 @@
 use crate::webrtc_rpc::transport;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::Event;
@@ -13,7 +14,7 @@ pub enum Error {
     CommandTimeout,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientError {
     Unavailable,
     Timeout,

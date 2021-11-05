@@ -329,6 +329,13 @@ impl RaftWorker<Follower> {
                 // Got heartbeat, reset timeout
                 *timeout = self.election_timeout();
             }
+            RpcRequest::ForwardClientRequest(_) => {
+                console_log!("got forwarded request while follower");
+                let resp = Err(ClientError::Unavailable);
+                resp_tx
+                    .send(Ok(RpcResponse::ForwardClientRequest(resp)))
+                    .expect("RPC response channel closed");
+            }
         }
     }
 }
@@ -404,6 +411,14 @@ impl RaftWorker<Candidate> {
                 console_log!("I LOSE!");
                 StateChange::BecomeFollower
             }
+            RpcRequest::ForwardClientRequest(_) => {
+                console_log!("got forwarded request while candidate");
+                let resp = Err(ClientError::Unavailable);
+                resp_tx
+                    .send(Ok(RpcResponse::ForwardClientRequest(resp)))
+                    .expect("RPC response channel closed");
+                StateChange::Continue
+            }
         }
     }
 
@@ -475,10 +490,7 @@ impl RaftWorker<Leader> {
                 }
                 res = self.state.client_rx.next() => {
                     let (req, resp_tx) = res.expect("client channel closed");
-                    match req {
-                        ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
-                        ClientRequest::Set(ref key, ref val) => self.handle_set_request(key, val, resp_tx),
-                    }
+                    self.handle_client_request(req, resp_tx);
                 }
                 _ = heartbeat => {
                     for peer in &self.state.peers {
@@ -638,9 +650,29 @@ impl RaftWorker<Leader> {
                     resp_tx.send(Ok(resp)).expect("response channel closed");
                 }
             }
+            RpcRequest::ForwardClientRequest(req) => {
+                let (tx, rx) = oneshot::channel();
+                spawn_local(async move {
+                    if let Ok(resp) = rx.await {
+                        let _ = resp_tx.send(Ok(RpcResponse::ForwardClientRequest(resp)));
+                    }
+                });
+                self.handle_client_request(req, tx);
+            }
         }
 
         StateChange::Continue
+    }
+
+    fn handle_client_request(
+        &mut self,
+        req: ClientRequest,
+        resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
+    ) {
+        match req {
+            ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
+            ClientRequest::Set(ref key, ref val) => self.handle_set_request(key, val, resp_tx),
+        }
     }
 
     fn handle_get_request(
