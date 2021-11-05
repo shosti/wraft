@@ -1,4 +1,3 @@
-pub mod client;
 pub mod errors;
 mod persistence;
 mod rpc_server;
@@ -7,7 +6,7 @@ mod worker;
 use crate::console_log;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
-use errors::Error;
+use errors::{ClientError, Error};
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::stream::StreamExt;
@@ -25,7 +24,7 @@ pub type RpcMessage = (
 );
 pub type ClientMessage = (
     ClientRequest,
-    oneshot::Sender<Result<ClientResponse, client::Error>>,
+    oneshot::Sender<Result<ClientResponse, ClientError>>,
 );
 
 #[derive(Debug)]

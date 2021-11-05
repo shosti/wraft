@@ -13,6 +13,9 @@ pub enum Error {
     CommandTimeout,
 }
 
+#[derive(Debug)]
+pub enum ClientError {}
+
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
         Error::Persistence(err)
