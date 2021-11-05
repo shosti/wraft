@@ -1,5 +1,7 @@
 use crate::raft::{LogCmd, LogEntry, LogIndex, NodeId, TermIndex};
+use std::cmp::min;
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use web_sys::Storage;
 
 #[derive(Debug)]
@@ -95,15 +97,27 @@ impl PersistentState {
         entry
     }
 
-    fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {
-        let key = self.log_key(idx);
-        match self.storage.get_item(&key).unwrap() {
-            Some(data) => {
-                let entry: LogEntry = serde_json::from_str(&data).unwrap();
-                Some(entry)
-            }
-            None => None,
+    pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {
+        if idx > self.last_log_index() {
+            return None;
         }
+        let key = self.log_key(idx);
+        let data = self.storage.get_item(&key).unwrap().unwrap(); // Christmas!
+        let entry: LogEntry = serde_json::from_str(&data).unwrap();
+        Some(entry)
+    }
+
+    pub fn truncate_from(&mut self, idx: LogIndex) {
+        let new_index = min(idx - 1, self.last_log_index());
+        self.set_last_log_index(new_index);
+    }
+
+    pub fn sublog(&self, indices: RangeInclusive<LogIndex>) -> Vec<LogEntry> {
+        indices
+            .map(|i| self.get_log(i))
+            .filter(|e| e.is_some())
+            .flatten()
+            .collect()
     }
 
     pub fn current_term(&self) -> TermIndex {
