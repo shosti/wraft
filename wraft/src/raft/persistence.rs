@@ -81,16 +81,18 @@ impl PersistentState {
         self.set_current_term(self.current_term() + 1);
     }
 
-    pub fn append_log(&mut self, cmd: LogCmd) -> LogIndex {
+    pub fn append_log(&mut self, cmd: LogCmd) -> LogEntry {
+        let idx = self.increment_last_log_index();
         let entry = LogEntry {
             cmd,
+            idx,
             term: self.current_term(),
         };
-        let idx = self.increment_last_log_index();
         let key = self.log_key(self.last_log_index());
         let data = serde_json::to_string(&entry).unwrap();
         self.storage.set_item(&key, &data).unwrap();
-        idx
+
+        entry
     }
 
     fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {

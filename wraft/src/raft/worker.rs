@@ -4,7 +4,7 @@ use crate::raft::rpc_server::RpcServer;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
     ClientResponse, LogCmd, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
-    RpcMessage, RpcRequest, RpcResponse,
+    RpcMessage, RpcRequest, RpcResponse, TermIndex,
 };
 use crate::util::{interval, sleep, Sleep};
 use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
@@ -185,6 +185,7 @@ where
         RpcResponse::AppendEntries(AppendEntriesResponse {
             term,
             success: true,
+            max_entry_index: None,
         })
     }
 
@@ -416,16 +417,27 @@ impl RaftWorker<Leader> {
                     match req {
                         ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
                         ClientRequest::Set(key, val) => {
+                            let prev_log_index = self.state.persistent.last_log_index();
+                            let prev_log_term = self.state.persistent.last_log_term();
+
                             let cmd = LogCmd::Set { key, data: val };
-                            let idx = self.state.persistent.append_log(cmd);
-                            client_set_resps.insert(idx, resp_tx);
-                            log_votes.insert(idx, 0);
+                            let entry = self.state.persistent.append_log(cmd);
+
+                            client_set_resps.insert(entry.idx, resp_tx);
+                            log_votes.insert(entry.idx, 0);
+
+                            self.send_append_entries(vec![entry], &resps_tx, prev_log_index, prev_log_term);
+
+                            // We've sent something, so reset the heartbeat
+                            heartbeat = self.heartbeat_timeout();
                         }
                     }
                 }
                 _ = heartbeat => {
+                    let prev_log_index = self.state.persistent.last_log_index();
+                    let prev_log_term = self.state.persistent.last_log_term();
                     let empty_entries = Vec::new();
-                    self.send_append_entries(empty_entries, &resps_tx);
+                    self.send_append_entries(empty_entries, &resps_tx, prev_log_index, prev_log_term);
                     heartbeat = self.heartbeat_timeout();
                 }
                 _ = debug_interval.next() => {
@@ -455,6 +467,7 @@ impl RaftWorker<Leader> {
                     let resp = RpcResponse::AppendEntries(AppendEntriesResponse {
                         term,
                         success: false,
+                        max_entry_index: None,
                     });
                     resp_tx.send(Ok(resp)).expect("response channel closed");
                 }
@@ -507,14 +520,15 @@ impl RaftWorker<Leader> {
         &self,
         entries: Vec<LogEntry>,
         resps_tx: &Sender<Result<RpcResponse, transport::Error>>,
+        prev_log_index: LogIndex,
+        prev_log_term: TermIndex,
     ) {
         let req = RpcRequest::AppendEntries(AppendEntriesRequest {
             term: self.state.persistent.current_term(),
             leader_id: self.state.node_id.clone(),
-            // TODO: fix all of these
-            leader_commit: 0,
-            prev_log_index: 0,
-            prev_log_term: 0,
+            leader_commit: self.state.commit_index,
+            prev_log_index,
+            prev_log_term,
             entries,
         });
         for mut client in self

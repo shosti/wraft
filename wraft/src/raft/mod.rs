@@ -89,12 +89,15 @@ pub struct RequestVoteResponse {
 pub struct AppendEntriesResponse {
     term: TermIndex,
     success: bool,
+    // Indicates the highest log entry success, or None if it was failure
+    max_entry_index: Option<LogIndex>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogEntry {
     pub cmd: LogCmd,
     pub term: TermIndex,
+    pub idx: LogIndex,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
