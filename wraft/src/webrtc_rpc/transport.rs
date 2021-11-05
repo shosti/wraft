@@ -349,7 +349,6 @@ impl<Req, Resp> Client<Req, Resp> {
         match self.req_tx.send((req, resp_tx)).await {
             Ok(_) => resp_rx.await.map_err(|_| Error::Disconnected)?,
             Err(_) => {
-                console_log!("YO, I'M DISCONNECTED!");
                 self.connected.store(false, Ordering::SeqCst);
                 Err(Error::Disconnected)
             }

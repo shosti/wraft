@@ -27,11 +27,14 @@ enum RaftWorkerState {
 
 struct RaftWorker<S> {
     state: RaftState,
-    _status: S,
+    status: S,
 }
 
+#[derive(Debug)]
 struct Follower {}
+#[derive(Debug)]
 struct Candidate {}
+#[derive(Debug)]
 struct Leader {
     _next_indices: HashMap<NodeId, LogIndex>,
     _match_indices: HashMap<NodeId, LogIndex>,
@@ -66,6 +69,7 @@ struct RaftState {
 
 #[derive(Debug)]
 pub struct RaftDebugState {
+    status: String,
     leader_id: Option<NodeId>,
     node_id: NodeId,
     session_key: String,
@@ -127,7 +131,10 @@ impl RaftWorkerState {
     }
 }
 
-impl<S> RaftWorker<S> {
+impl<S> RaftWorker<S>
+where
+    S: std::fmt::Debug,
+{
     fn election_timeout(&self) -> Sleep {
         let delay = thread_rng().gen_range(150..300);
         sleep(Duration::from_millis(delay))
@@ -182,24 +189,7 @@ impl<S> RaftWorker<S> {
     }
 
     fn send_debug(&self) {
-        let debug = RaftDebugState {
-            leader_id: self.state.leader_id.clone(),
-            node_id: self.state.node_id.clone(),
-            session_key: self.state.session_key.clone(),
-            cluster_size: self.state.cluster_size,
-            peers: self
-                .state
-                .peer_clients
-                .iter()
-                .filter(|(_, c)| c.is_connected())
-                .map(|(k, _)| k.to_string())
-                .collect(),
-            voted_for: self.state.persistent.voted_for().clone(),
-            current_term: self.state.persistent.current_term(),
-
-            commit_index: self.state.commit_index,
-            last_applied: self.state.last_applied,
-        };
+        let debug: RaftDebugState = self.into();
         let mut tx = self.state.debug_tx.clone();
         spawn_local(async move {
             let _ = tx.send(debug).await;
@@ -211,7 +201,7 @@ impl RaftWorker<Follower> {
     pub fn new(state: RaftState) -> Self {
         Self {
             state,
-            _status: Follower {},
+            status: Follower {},
         }
     }
 
@@ -350,7 +340,12 @@ impl RaftWorker<Candidate> {
             last_log_index: self.state.persistent.last_log_index(),
             last_log_term: self.state.persistent.last_log_term(),
         });
-        for client in self.state.peer_clients.values() {
+        for client in self
+            .state
+            .peer_clients
+            .values()
+            .filter(|c| c.is_connected())
+        {
             let mut c = client.clone();
             let mut tx = votes_tx.clone();
             let r = req.clone();
@@ -502,7 +497,13 @@ impl RaftWorker<Leader> {
             prev_log_term: 0,
             entries,
         });
-        for mut client in self.state.peer_clients.values().cloned() {
+        for mut client in self
+            .state
+            .peer_clients
+            .values()
+            .filter(|c| c.is_connected())
+            .cloned()
+        {
             let r = req.clone();
             let mut tx = resps_tx.clone();
             spawn_local(async move {
@@ -520,7 +521,7 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Follower> {
     fn from(from: RaftWorker<Candidate>) -> Self {
         Self {
             state: from.state,
-            _status: Follower {},
+            status: Follower {},
         }
     }
 }
@@ -529,7 +530,7 @@ impl From<RaftWorker<Leader>> for RaftWorker<Follower> {
     fn from(from: RaftWorker<Leader>) -> Self {
         Self {
             state: from.state,
-            _status: Follower {},
+            status: Follower {},
         }
     }
 }
@@ -538,7 +539,7 @@ impl From<RaftWorker<Follower>> for RaftWorker<Candidate> {
     fn from(from: RaftWorker<Follower>) -> Self {
         let mut next = Self {
             state: from.state,
-            _status: Candidate {},
+            status: Candidate {},
         };
         next.state.leader_id = None;
         next
@@ -549,12 +550,39 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
     fn from(from: RaftWorker<Candidate>) -> Self {
         let mut next = Self {
             state: from.state,
-            _status: Leader {
+            status: Leader {
                 _next_indices: HashMap::new(),
                 _match_indices: HashMap::new(),
             },
         };
         next.state.leader_id = Some(next.state.node_id.clone());
         next
+    }
+}
+
+impl<S> From<&RaftWorker<S>> for RaftDebugState
+where
+    S: std::fmt::Debug,
+{
+    fn from(from: &RaftWorker<S>) -> Self {
+        Self {
+            status: format!("{:?}", from.status),
+            leader_id: from.state.leader_id.clone(),
+            node_id: from.state.node_id.clone(),
+            session_key: from.state.session_key.clone(),
+            cluster_size: from.state.cluster_size,
+            peers: from
+                .state
+                .peer_clients
+                .iter()
+                .filter(|(_, c)| c.is_connected())
+                .map(|(k, _)| k.to_string())
+                .collect(),
+            voted_for: from.state.persistent.voted_for().clone(),
+            current_term: from.state.persistent.current_term(),
+
+            commit_index: from.state.commit_index,
+            last_applied: from.state.last_applied,
+        }
     }
 }
