@@ -8,7 +8,7 @@ use crate::console_log;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
 use errors::Error;
-use futures::channel::mpsc::{channel, Sender};
+use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::stream::StreamExt;
 use rpc_server::RpcServer;
@@ -31,6 +31,7 @@ pub type ClientMessage = (
 #[derive(Debug)]
 pub struct Raft {
     client_tx: Sender<ClientMessage>,
+    pub debug_rx: Receiver<worker::RaftDebugState>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -121,7 +122,6 @@ impl Raft {
         }
 
         let (rpc_tx, rpc_rx) = channel(100);
-        let (client_tx, client_rx) = channel(100);
         let rpc_server = RpcServer::new(rpc_tx);
 
         while let Some(mut peer) = peers.pop() {
@@ -130,16 +130,18 @@ impl Raft {
                 peer.serve(s).await;
             });
         }
-        spawn_local(worker::run(
+        let (client_tx, debug_rx) = worker::run(
             node_id.clone(),
             session_key.clone(),
             rpc_rx,
-            client_rx,
             peers_rx,
             peer_clients,
             rpc_server,
-        ));
+        );
 
-        Ok(Self { client_tx })
+        Ok(Self {
+            client_tx,
+            debug_rx,
+        })
     }
 }

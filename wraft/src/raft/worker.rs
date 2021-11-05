@@ -5,7 +5,7 @@ use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientMessage, ClientResponse, LogEntry, LogIndex,
     NodeId, RequestVoteRequest, RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
 };
-use crate::util::{sleep, Sleep};
+use crate::util::{interval, sleep, Sleep};
 use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
@@ -44,7 +44,6 @@ enum StateChange {
     BecomeFollower,
 }
 
-#[derive(Debug)]
 struct RaftState {
     leader_id: Option<NodeId>,
     node_id: NodeId,
@@ -55,6 +54,7 @@ struct RaftState {
     rpc_rx: Receiver<RpcMessage>,
     rpc_server: RpcServer,
     peers_rx: Receiver<PeerTransport>,
+    debug_tx: Sender<RaftDebugState>,
 
     // Volatile state
     commit_index: u64,
@@ -64,15 +64,31 @@ struct RaftState {
     persistent: PersistentState,
 }
 
-pub async fn run(
+#[derive(Debug)]
+pub struct RaftDebugState {
+    leader_id: Option<NodeId>,
+    node_id: NodeId,
+    session_key: String,
+    cluster_size: usize,
+    peers: Vec<NodeId>,
+    voted_for: Option<NodeId>,
+    current_term: u64,
+
+    commit_index: u64,
+    last_applied: u64,
+}
+
+pub fn run(
     node_id: NodeId,
     session_key: String,
     rpc_rx: Receiver<RpcMessage>,
-    client_rx: Receiver<ClientMessage>,
     peers_rx: Receiver<PeerTransport>,
     peer_clients: HashMap<NodeId, RpcClient>,
     rpc_server: RpcServer,
-) {
+) -> (Sender<ClientMessage>, Receiver<RaftDebugState>) {
+    let (client_tx, client_rx) = channel(100);
+    let (debug_tx, debug_rx) = channel(100);
+
     let cluster_size = peer_clients.len();
     let persistent = PersistentState::new(&session_key);
     let state = RaftState {
@@ -86,14 +102,19 @@ pub async fn run(
         client_rx,
         peers_rx,
         rpc_server,
+        debug_tx,
         commit_index: 0,
         last_applied: 0,
     };
 
-    let mut worker = RaftWorkerState::Follower(RaftWorker::new(state));
-    loop {
-        worker = worker.next().await;
-    }
+    spawn_local(async move {
+        let mut worker = RaftWorkerState::Follower(RaftWorker::new(state));
+        loop {
+            worker = worker.next().await;
+        }
+    });
+
+    (client_tx, debug_rx)
 }
 
 impl RaftWorkerState {
@@ -159,6 +180,31 @@ impl<S> RaftWorker<S> {
         });
         self.state.peer_clients.insert(client.node_id(), client);
     }
+
+    fn send_debug(&self) {
+        let debug = RaftDebugState {
+            leader_id: self.state.leader_id.clone(),
+            node_id: self.state.node_id.clone(),
+            session_key: self.state.session_key.clone(),
+            cluster_size: self.state.cluster_size,
+            peers: self
+                .state
+                .peer_clients
+                .iter()
+                .filter(|(_, c)| c.is_connected())
+                .map(|(k, _)| k.to_string())
+                .collect(),
+            voted_for: self.state.persistent.voted_for().clone(),
+            current_term: self.state.persistent.current_term(),
+
+            commit_index: self.state.commit_index,
+            last_applied: self.state.last_applied,
+        };
+        let mut tx = self.state.debug_tx.clone();
+        spawn_local(async move {
+            let _ = tx.send(debug).await;
+        });
+    }
 }
 
 impl RaftWorker<Follower> {
@@ -172,6 +218,7 @@ impl RaftWorker<Follower> {
     async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A FOLLOWER");
         let mut timeout = self.election_timeout();
+        let mut debug_interval = interval(Duration::from_secs(1));
 
         loop {
             select! {
@@ -189,6 +236,9 @@ impl RaftWorker<Follower> {
                 _ = timeout => {
                     console_log!("Calling election!");
                     return RaftWorkerState::Candidate(self.into());
+                }
+                _ = debug_interval.next() => {
+                    self.send_debug();
                 }
             }
         }
@@ -228,6 +278,7 @@ impl RaftWorker<Candidate> {
 
         let mut votes_rx = self.request_votes();
         let mut timeout = self.election_timeout();
+        let mut debug_interval = interval(Duration::from_secs(1));
         loop {
             select! {
                 res = votes_rx.next() => {
@@ -244,6 +295,9 @@ impl RaftWorker<Candidate> {
                     if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
                         return RaftWorkerState::Follower(self.into());
                     }
+                }
+                _ = debug_interval.next() => {
+                    self.send_debug();
                 }
                 _ = timeout => {
                     console_log!("ELECTION TIMED OUT");
@@ -329,6 +383,7 @@ impl RaftWorker<Leader> {
         console_log!("BEING A LEADER");
 
         let (resps_tx, mut resps_rx) = channel::<Result<RpcResponse, transport::Error>>(100);
+        let mut debug_interval = interval(Duration::from_secs(1));
 
         // Initial heartbeat happens immediately
         let mut heartbeat = sleep(Duration::from_millis(0));
@@ -357,6 +412,9 @@ impl RaftWorker<Leader> {
                     let empty_entries = Vec::new();
                     self.send_append_entries(empty_entries, &resps_tx);
                     heartbeat = self.heartbeat_timeout();
+                }
+                _ = debug_interval.next() => {
+                    self.send_debug();
                 }
             }
         }

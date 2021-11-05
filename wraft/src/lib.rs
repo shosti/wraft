@@ -2,12 +2,10 @@ pub mod raft;
 pub mod util;
 mod webrtc_rpc;
 
-use crate::util::Interval;
 use futures::prelude::*;
 use raft::Raft;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -80,14 +78,12 @@ async fn run_raft(node_id: String, session_key: String, cluster_size: usize) {
     let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
     let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
 
-    let raft = Raft::initiate(node_id, session_key, cluster_size)
+    let mut raft = Raft::initiate(node_id, session_key, cluster_size)
         .await
         .unwrap();
 
-    let mut interval = Interval::new(Duration::from_secs(1));
-
-    while let Some(()) = interval.next().await {
-        let content = format!("<pre>{:#?}</pre>", raft);
+    while let Some(s) = raft.debug_rx.next().await {
+        let content = format!("<pre>{:#?}</pre>", s);
         raft_content.set_inner_html(&content);
     }
 }

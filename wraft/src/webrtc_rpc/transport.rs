@@ -7,6 +7,8 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -53,7 +55,8 @@ pub struct Server<Req, Resp> {
 
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
-    node_id: String,
+    node_id: Arc<String>,
+    connected: Arc<AtomicBool>,
     req_tx: Sender<RequestMessage<Req, Resp>>,
 }
 
@@ -113,7 +116,8 @@ impl PeerTransport {
         server.set_onmessage_callback(client_resp_tx, server_req_tx);
 
         let client = Client {
-            node_id: self.node_id,
+            connected: Arc::new(true.into()),
+            node_id: Arc::new(self.node_id),
             req_tx: client_req_tx,
         };
 
@@ -329,17 +333,27 @@ async fn handle_client_requests<Req, Resp>(
 
 impl<Req, Resp> Client<Req, Resp> {
     pub fn node_id(&self) -> String {
-        self.node_id.clone()
+        self.node_id.to_string()
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
     }
 
     pub async fn call(&mut self, req: Req) -> Result<Resp, Error> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.req_tx
-            .send((req, resp_tx))
-            .await
-            .map_err(|_| Error::Disconnected)?;
+        if !self.is_connected() {
+            return Err(Error::Disconnected);
+        }
 
-        resp_rx.await.map_err(|_| Error::Disconnected)?
+        let (resp_tx, resp_rx) = oneshot::channel();
+        match self.req_tx.send((req, resp_tx)).await {
+            Ok(_) => resp_rx.await.map_err(|_| Error::Disconnected)?,
+            Err(_) => {
+                console_log!("YO, I'M DISCONNECTED!");
+                self.connected.store(false, Ordering::SeqCst);
+                Err(Error::Disconnected)
+            }
+        }
     }
 }
 

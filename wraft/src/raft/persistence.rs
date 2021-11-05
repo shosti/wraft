@@ -1,5 +1,5 @@
 use crate::raft::errors::Error;
-use crate::raft::{LogEntry, LogIndex, TermIndex};
+use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
 use web_sys::Storage;
 
 #[derive(Debug)]
@@ -7,7 +7,7 @@ pub struct PersistentState {
     session_key: String,
     last_log_index: LogIndex,
     current_term: TermIndex,
-    voted_for: Option<String>,
+    voted_for: Option<NodeId>,
     storage: Storage,
 }
 
@@ -23,7 +23,6 @@ impl PersistentState {
             current_term: 0,
             voted_for: None,
         };
-
 
         if let Some(term) = state.get(state.current_term_key().as_str()) {
             state.set_current_term(term.parse().unwrap());
@@ -93,7 +92,7 @@ impl PersistentState {
         self.set(&key, &val);
     }
 
-    pub fn voted_for(&self) -> &Option<String> {
+    pub fn voted_for(&self) -> &Option<NodeId> {
         &self.voted_for
     }
 
