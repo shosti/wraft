@@ -98,7 +98,8 @@ impl PersistentState {
     }
 
     pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {
-        if idx > self.last_log_index() {
+        // log indices start at 1, as per the paper
+        if idx == 0 || idx > self.last_log_index() {
             return None;
         }
         let key = self.log_key(idx);

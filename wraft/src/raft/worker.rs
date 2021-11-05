@@ -198,7 +198,8 @@ where
             };
         }
         let entry = self.state.persistent.get_log(req.prev_log_index);
-        if entry.is_none() || entry.unwrap().term != req.prev_log_term {
+        if req.prev_log_index != 0 && (entry.is_none() || entry.unwrap().term != req.prev_log_term)
+        {
             return AppendEntriesResponse {
                 term: current_term,
                 success: false,
