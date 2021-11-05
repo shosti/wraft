@@ -106,6 +106,8 @@ pub enum LogCmd {
     Delete { key: String },
 }
 
+const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
+
 impl Raft {
     pub async fn initiate(
         node_id: NodeId,
@@ -153,24 +155,45 @@ impl Raft {
         })
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<String>, ClientError> {
-        const REQUEST_TIMEOUT_MILLIS: u64 = 2000;
-
+    pub async fn get(&self, key: String) -> Result<Option<String>, ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
-        let msg = ClientRequest::Get(key.to_string());
+        let msg = ClientRequest::Get(key);
         let mut tx = self.client_tx.clone();
         tx.send((msg, resp_tx))
             .await
             .map_err(|_| ClientError::Unavailable)?;
         select! {
             res = resp_rx => {
-                if let Ok(Ok(ClientResponse::Get(val))) = res {
-                    Ok(val)
-                } else {
-                    Err(ClientError::Unavailable)
+                match res {
+                    Ok(Ok(ClientResponse::Get(val))) => Ok(val),
+                    Ok(Err(err)) => Err(err),
+                    Err(_) => Err(ClientError::Unavailable),
+                    _ => unreachable!(),
                 }
             }
-            _ = sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)) => {
+            _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
+                Err(ClientError::Timeout)
+            }
+        }
+    }
+
+    pub async fn set(&self, key: String, val: String) -> Result<(), ClientError> {
+        let (resp_tx, mut resp_rx) = oneshot::channel();
+        let msg = ClientRequest::Set(key, val);
+        let mut tx = self.client_tx.clone();
+        tx.send((msg, resp_tx))
+            .await
+            .map_err(|_| ClientError::Unavailable)?;
+        select! {
+            res = resp_rx => {
+                match res {
+                    Ok(Ok(ClientResponse::Ack)) => Ok(()),
+                    Ok(Err(err)) => Err(err),
+                    Err(_) => Err(ClientError::Unavailable),
+                    _ => unreachable!(),
+                }
+            }
+            _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
                 Err(ClientError::Timeout)
             }
         }
