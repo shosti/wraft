@@ -6,17 +6,31 @@ use web_sys::Storage;
 pub struct PersistentState {
     session_key: String,
     last_log_index: LogIndex,
+    current_term: TermIndex,
+    voted_for: Option<String>,
+    storage: Storage,
 }
 
 impl PersistentState {
     pub fn new(session_key: &str) -> Self {
-        let state = Self {
+        let window = web_sys::window().expect("no global window");
+        let storage = window.local_storage().expect("no local storage").unwrap();
+
+        let mut state = Self {
+            storage,
             session_key: session_key.to_string(),
             last_log_index: 0,
+            current_term: 0,
+            voted_for: None,
         };
 
-        if state.get(state.current_term_key().as_str()).is_none() {
-            state.set_current_term(0);
+
+        if let Some(term) = state.get(state.current_term_key().as_str()) {
+            state.set_current_term(term.parse().unwrap());
+        }
+
+        if let Some(vote) = state.get(state.voted_for_key().as_str()) {
+            state.set_voted_for(Some(&vote));
         }
 
         state
@@ -34,7 +48,7 @@ impl PersistentState {
     }
 
     // Returns true if the term needed to be updated
-    pub fn update_term(&self, term: TermIndex) -> bool {
+    pub fn update_term(&mut self, term: TermIndex) -> bool {
         if self.current_term() < term {
             self.set_voted_for(None);
             self.set_current_term(term);
@@ -44,7 +58,7 @@ impl PersistentState {
         }
     }
 
-    pub fn increment_term(&self) {
+    pub fn increment_term(&mut self) {
         self.set_voted_for(None);
         self.set_current_term(self.current_term() + 1);
     }
@@ -53,13 +67,13 @@ impl PersistentState {
         self.last_log_index += 1;
         let key = self.log_key(self.last_log_index);
         let data = serde_json::to_string(&entry)?;
-        self.storage().set_item(&key, &data).unwrap();
+        self.storage.set_item(&key, &data).unwrap();
         Ok(())
     }
 
     fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {
         let key = self.log_key(idx);
-        match self.storage().get_item(&key).unwrap() {
+        match self.storage.get_item(&key).unwrap() {
             Some(data) => {
                 let entry: LogEntry = serde_json::from_str(&data).unwrap();
                 Some(entry)
@@ -69,44 +83,40 @@ impl PersistentState {
     }
 
     pub fn current_term(&self) -> TermIndex {
-        let key = self.current_term_key();
-        self.get(&key)
-            .expect("current term not set")
-            .parse::<TermIndex>()
-            .unwrap()
+        self.current_term
     }
 
-    fn set_current_term(&self, term: TermIndex) {
+    fn set_current_term(&mut self, term: TermIndex) {
+        self.current_term = term;
         let key = self.current_term_key();
         let val = term.to_string();
         self.set(&key, &val);
     }
 
-    pub fn voted_for(&self) -> Option<String> {
-        let key = self.voted_for_key();
-        self.get(&key)
+    pub fn voted_for(&self) -> &Option<String> {
+        &self.voted_for
     }
 
-    pub fn set_voted_for(&self, val: Option<&str>) {
+    pub fn set_voted_for(&mut self, val: Option<&str>) {
         let key = self.voted_for_key();
-
-        match val {
-            Some(val) => self.set(&key, val),
-            None => self.storage().remove_item(&key).unwrap(),
+        match &val {
+            Some(val) => {
+                self.voted_for = Some(val.to_string());
+                self.set(&key, val);
+            }
+            None => {
+                self.storage.remove_item(&key).unwrap();
+                self.voted_for = None;
+            }
         }
     }
 
-    fn storage(&self) -> Storage {
-        let window = web_sys::window().expect("no global window");
-        window.local_storage().expect("no local storage").unwrap()
-    }
-
     fn get(&self, key: &str) -> Option<String> {
-        self.storage().get_item(key).unwrap()
+        self.storage.get_item(key).unwrap()
     }
 
     fn set(&self, key: &str, val: &str) {
-        self.storage().set_item(key, val).unwrap();
+        self.storage.set_item(key, val).unwrap();
     }
 
     fn log_key(&self, idx: LogIndex) -> String {

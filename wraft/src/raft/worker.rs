@@ -118,11 +118,11 @@ impl<S> RaftWorker<S> {
         (self.state.cluster_size / 2) + 1
     }
 
-    fn handle_request_vote(&self, req: &RequestVoteRequest) -> RpcResponse {
+    fn handle_request_vote(&mut self, req: &RequestVoteRequest) -> RpcResponse {
         let voted_for = self.state.persistent.voted_for();
         let current_term = self.state.persistent.current_term();
         if req.term >= current_term
-            && (voted_for == None || *voted_for.unwrap() == req.candidate)
+            && (voted_for.is_none() || *voted_for.as_ref().unwrap() == req.candidate)
             && req.last_log_index >= self.state.commit_index
         {
             self.state.persistent.set_voted_for(Some(&req.candidate));
@@ -255,14 +255,14 @@ impl RaftWorker<Candidate> {
         }
     }
 
-    fn vote_for_self(&self) {
+    fn vote_for_self(&mut self) {
         self.state
             .persistent
             .set_voted_for(Some(&self.state.node_id));
     }
 
     fn handle_rpc(
-        &self,
+        &mut self,
         req: RpcRequest,
         resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
     ) -> StateChange {
@@ -369,7 +369,7 @@ impl RaftWorker<Leader> {
     }
 
     fn handle_rpc(
-        &self,
+        &mut self,
         req: RpcRequest,
         resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
     ) -> StateChange {
@@ -407,7 +407,7 @@ impl RaftWorker<Leader> {
     }
 
     fn handle_append_entries_response(
-        &self,
+        &mut self,
         resp: Result<RpcResponse, transport::Error>,
     ) -> StateChange {
         match resp {
