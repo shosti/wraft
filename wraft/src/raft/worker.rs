@@ -287,8 +287,8 @@ impl RaftWorker<Follower> {
                     self.handle_rpc(req, resp_tx, &mut timeout);
                 }
                 res = self.state.client_rx.next() => {
-                    let (req, _resp_tx) = res.expect("Client channel closed");
-                    console_log!("WOULD FORWARD REQUEST {:?} TO {:?}", req, self.state.leader_id);
+                    let (req, resp_tx) = res.expect("Client channel closed");
+                    self.forward_client_request(req, resp_tx);
                 }
                 res = self.state.peers_rx.next() => {
                     self.handle_new_peer(res.expect("peer channel closed"));
@@ -335,6 +335,32 @@ impl RaftWorker<Follower> {
                 resp_tx
                     .send(Ok(RpcResponse::ForwardClientRequest(resp)))
                     .expect("RPC response channel closed");
+            }
+        }
+    }
+
+    fn forward_client_request(&self, req: ClientRequest, resp_tx: oneshot::Sender<ClientResult>) {
+        match self.state.leader_id {
+            Some(ref leader_id) => {
+                if let Some(mut client) = self.state.peer_clients.get(leader_id).cloned() {
+                    spawn_local(async move {
+                        match client.call(RpcRequest::ForwardClientRequest(req)).await {
+                            Ok(RpcResponse::ForwardClientRequest(resp)) => {
+                                let _ = resp_tx.send(resp);
+                            }
+                            Err(err) => {
+                                console_log!("error forwarding request: {:?}", err);
+                                let _ = resp_tx.send(Err(ClientError::Unavailable));
+                            }
+                            _ => unreachable!(),
+                        }
+                    });
+                } else {
+                    let _ = resp_tx.send(Err(ClientError::Unavailable));
+                }
+            }
+            None => {
+                let _ = resp_tx.send(Err(ClientError::Unavailable));
             }
         }
     }
