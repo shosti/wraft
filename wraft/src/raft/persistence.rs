@@ -45,6 +45,10 @@ impl PersistentState {
         self.snapshot.clone()
     }
 
+    pub fn get(&self, key: &str) -> Option<String> {
+        self.snapshot.get(key).cloned()
+    }
+
     fn init_snapshot(&mut self) {
         for idx in 1..=self.last_log_index {
             self.play_log(idx);

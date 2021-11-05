@@ -4,15 +4,19 @@ mod rpc_server;
 mod worker;
 
 use crate::console_log;
+use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
 use errors::{ClientError, Error};
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::channel::oneshot;
+use futures::select;
+use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rpc_server::RpcServer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
 pub type LogIndex = u64;
@@ -47,12 +51,13 @@ pub enum RpcResponse {
 
 #[derive(Debug)]
 pub enum ClientRequest {
-    TODO,
+    Get(String),
 }
 
 #[derive(Debug)]
 pub enum ClientResponse {
     Ack,
+    Get(Option<String>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -142,5 +147,28 @@ impl Raft {
             client_tx,
             debug_rx,
         })
+    }
+
+    pub async fn get(&self, key: &str) -> Result<Option<String>, ClientError> {
+        const REQUEST_TIMEOUT_MILLIS: u64 = 2000;
+
+        let (resp_tx, mut resp_rx) = oneshot::channel();
+        let msg = ClientRequest::Get(key.to_string());
+        let mut tx = self.client_tx.clone();
+        tx.send((msg, resp_tx))
+            .await
+            .map_err(|_| ClientError::Unavailable)?;
+        select! {
+            res = resp_rx => {
+                if let Ok(Ok(ClientResponse::Get(val))) = res {
+                    Ok(val)
+                } else {
+                    Err(ClientError::Unavailable)
+                }
+            }
+            _ = sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)) => {
+                Err(ClientError::Timeout)
+            }
+        }
     }
 }

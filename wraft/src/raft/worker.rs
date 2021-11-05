@@ -2,8 +2,9 @@ use crate::console_log;
 use crate::raft::persistence::PersistentState;
 use crate::raft::rpc_server::RpcServer;
 use crate::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, ClientMessage, ClientResponse, LogEntry, LogIndex,
-    NodeId, RequestVoteRequest, RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
+    AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
+    ClientResponse, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
+    RpcMessage, RpcRequest, RpcResponse,
 };
 use crate::util::{interval, sleep, Sleep};
 use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
@@ -398,11 +399,8 @@ impl RaftWorker<Leader> {
                     }
                 }
                 res = self.state.client_rx.next() => {
-                    let (req, resp_tx) = res.expect("client channel closed");
-                    console_log!("Doing something with: {:?}", req);
-                    resp_tx.send(Ok(ClientResponse::Ack)).expect("client response closed");
-                    // We sent something, so reset the heartbeat timeout
-                    heartbeat = self.heartbeat_timeout();
+                    let (req, client_resp_tx) = res.expect("client channel closed");
+                    self.handle_client_request(&req, client_resp_tx, &resps_tx, &mut heartbeat);
                 }
                 _ = heartbeat => {
                     let empty_entries = Vec::new();
@@ -513,6 +511,22 @@ impl RaftWorker<Leader> {
                 // it doesn't matter
                 let _ = tx.send(resp).await;
             });
+        }
+    }
+
+    fn handle_client_request(
+        &self,
+        req: &ClientRequest,
+        client_resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
+        _rpc_resps_tx: &Sender<Result<RpcResponse, transport::Error>>,
+        _heartbeat: &mut Sleep,
+    ) {
+        match req {
+            ClientRequest::Get(key) => {
+                let val = self.state.persistent.get(key);
+                let resp = ClientResponse::Get(val);
+                let _ = client_resp_tx.send(Ok(resp));
+            }
         }
     }
 }

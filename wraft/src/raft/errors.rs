@@ -14,7 +14,10 @@ pub enum Error {
 }
 
 #[derive(Debug)]
-pub enum ClientError {}
+pub enum ClientError {
+    Unavailable,
+    Timeout,
+}
 
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
