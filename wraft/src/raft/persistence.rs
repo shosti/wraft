@@ -1,4 +1,3 @@
-use crate::raft::errors::Error;
 use crate::raft::{LogCmd, LogEntry, LogIndex, NodeId, TermIndex};
 use std::collections::HashMap;
 use web_sys::Storage;
@@ -28,11 +27,15 @@ impl PersistentState {
         };
 
         if let Some(term) = state.get_persistent(state.current_term_key().as_str()) {
-            state.set_current_term(term.parse().unwrap());
+            state.current_term = term.parse().unwrap();
         }
 
         if let Some(vote) = state.get_persistent(state.voted_for_key().as_str()) {
-            state.set_voted_for(Some(&vote));
+            state.voted_for = Some(vote);
+        }
+
+        if let Some(idx) = state.get_persistent(state.last_log_index_key().as_str()) {
+            state.last_log_index = idx.parse().unwrap();
         }
 
         state.init_snapshot();
@@ -70,6 +73,19 @@ impl PersistentState {
         self.last_log_index
     }
 
+    fn increment_last_log_index(&mut self) -> LogIndex {
+        let idx = self.last_log_index() + 1;
+        self.set_last_log_index(idx);
+        idx
+    }
+
+    fn set_last_log_index(&mut self, idx: LogIndex) {
+        self.last_log_index = idx;
+        let key = self.last_log_index_key();
+        let val = idx.to_string();
+        self.set_persistent(&key, &val);
+    }
+
     pub fn last_log_term(&self) -> TermIndex {
         match self.get_log(self.last_log_index()) {
             Some(entry) => entry.term,
@@ -93,12 +109,16 @@ impl PersistentState {
         self.set_current_term(self.current_term() + 1);
     }
 
-    pub fn _append_log(&mut self, entry: LogEntry) -> Result<(), Error> {
-        self.last_log_index += 1;
-        let key = self.log_key(self.last_log_index);
-        let data = serde_json::to_string(&entry)?;
+    pub fn append_log(&mut self, cmd: LogCmd) -> LogIndex {
+        let entry = LogEntry {
+            cmd,
+            term: self.current_term(),
+        };
+        let idx = self.increment_last_log_index();
+        let key = self.log_key(self.last_log_index());
+        let data = serde_json::to_string(&entry).unwrap();
         self.storage.set_item(&key, &data).unwrap();
-        Ok(())
+        idx
     }
 
     fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {
@@ -159,5 +179,9 @@ impl PersistentState {
 
     fn voted_for_key(&self) -> String {
         format!("voted-for-{}", self.session_key)
+    }
+
+    fn last_log_index_key(&self) -> String {
+        format!("last-log-index-{}", self.session_key)
     }
 }

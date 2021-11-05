@@ -52,6 +52,7 @@ pub enum RpcResponse {
 #[derive(Debug)]
 pub enum ClientRequest {
     Get(String),
+    Set(String, String),
 }
 
 #[derive(Debug)]

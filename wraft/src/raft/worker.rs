@@ -3,7 +3,7 @@ use crate::raft::persistence::PersistentState;
 use crate::raft::rpc_server::RpcServer;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
-    ClientResponse, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
+    ClientResponse, LogCmd, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
     RpcMessage, RpcRequest, RpcResponse,
 };
 use crate::util::{interval, sleep, Sleep};
@@ -379,8 +379,11 @@ impl RaftWorker<Leader> {
     async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A LEADER");
 
-        let (resps_tx, mut resps_rx) = channel::<Result<RpcResponse, transport::Error>>(100);
+        let (resps_tx, mut resps_rx) = channel(100);
         let mut debug_interval = interval(Duration::from_secs(1));
+        let mut log_votes = HashMap::<LogIndex, usize>::new();
+        let mut client_set_resps =
+            HashMap::<LogIndex, oneshot::Sender<Result<ClientResponse, ClientError>>>::new();
 
         // Initial heartbeat happens immediately
         let mut heartbeat = sleep(Duration::from_millis(0));
@@ -399,8 +402,16 @@ impl RaftWorker<Leader> {
                     }
                 }
                 res = self.state.client_rx.next() => {
-                    let (req, client_resp_tx) = res.expect("client channel closed");
-                    self.handle_client_request(&req, client_resp_tx, &resps_tx, &mut heartbeat);
+                    let (req, resp_tx) = res.expect("client channel closed");
+                    match req {
+                        ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
+                        ClientRequest::Set(key, val) => {
+                            let cmd = LogCmd::Set { key, data: val };
+                            let idx = self.state.persistent.append_log(cmd);
+                            client_set_resps.insert(idx, resp_tx);
+                            log_votes.insert(idx, 0);
+                        }
+                    }
                 }
                 _ = heartbeat => {
                     let empty_entries = Vec::new();
@@ -514,20 +525,14 @@ impl RaftWorker<Leader> {
         }
     }
 
-    fn handle_client_request(
+    fn handle_get_request(
         &self,
-        req: &ClientRequest,
+        key: &str,
         client_resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
-        _rpc_resps_tx: &Sender<Result<RpcResponse, transport::Error>>,
-        _heartbeat: &mut Sleep,
     ) {
-        match req {
-            ClientRequest::Get(key) => {
-                let val = self.state.persistent.get(key);
-                let resp = ClientResponse::Get(val);
-                let _ = client_resp_tx.send(Ok(resp));
-            }
-        }
+        let val = self.state.persistent.get(key);
+        let resp = ClientResponse::Get(val);
+        let _ = client_resp_tx.send(Ok(resp));
     }
 }
 
