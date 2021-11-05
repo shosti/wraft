@@ -16,6 +16,7 @@ use futures::stream::StreamExt;
 use rpc_server::RpcServer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -31,10 +32,10 @@ pub type ClientMessage = (
     oneshot::Sender<Result<ClientResponse, ClientError>>,
 );
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Raft {
     client_tx: Sender<ClientMessage>,
-    pub debug_rx: Receiver<worker::RaftDebugState>,
+    debug_rx: Arc<Mutex<Option<Receiver<worker::RaftDebugState>>>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -151,8 +152,13 @@ impl Raft {
 
         Ok(Self {
             client_tx,
-            debug_rx,
+            debug_rx: Arc::new(Mutex::new(Some(debug_rx))),
         })
+    }
+
+    pub fn get_debug_channel(&self) -> Option<Receiver<worker::RaftDebugState>> {
+        let mut rx = self.debug_rx.lock().unwrap();
+        rx.take()
     }
 
     pub async fn get(&self, key: String) -> Result<Option<String>, ClientError> {

@@ -78,14 +78,76 @@ async fn run_raft(node_id: String, session_key: String, cluster_size: usize) {
     let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
     let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
 
-    let mut raft = Raft::initiate(node_id, session_key, cluster_size)
+    let raft = Raft::initiate(node_id, session_key, cluster_size)
         .await
         .unwrap();
 
-    while let Some(s) = raft.debug_rx.next().await {
+    let mut debug_rx = raft.get_debug_channel().unwrap();
+    setup_controls(raft);
+
+    while let Some(s) = debug_rx.next().await {
         let content = format!("<pre>{:#?}</pre>", s);
         raft_content.set_inner_html(&content);
     }
+}
+
+fn setup_controls(raft: Raft) {
+    let document = get_document();
+    let set_form_elem = document.get_element_by_id("set-form").unwrap();
+    let set_form = set_form_elem.dyn_ref::<HtmlFormElement>().unwrap();
+
+    let set_raft = raft.clone();
+    let set = Closure::wrap(Box::new(move |ev: Event| {
+        ev.prevent_default();
+
+        let r = set_raft.clone();
+        spawn_local(async move {
+            let document = get_document();
+            let set_key_elem = document.get_element_by_id("set-key").unwrap();
+            let set_key = set_key_elem.dyn_ref::<HtmlInputElement>().unwrap();
+            let key = set_key.value();
+
+            let set_val_elem = document.get_element_by_id("set-value").unwrap();
+            let set_val = set_val_elem.dyn_ref::<HtmlInputElement>().unwrap();
+            let val = set_val.value();
+
+            if key.is_empty() || val.is_empty() {
+                return;
+            }
+            let res = r.set(key, val).await;
+            console_log!("RES: {:#?}", res);
+        });
+    }) as Box<dyn FnMut(Event)>);
+    set_form.set_onsubmit(Some(set.as_ref().unchecked_ref()));
+    set.forget();
+
+    let get_form_elem = document.get_element_by_id("get-form").unwrap();
+    let get_form = get_form_elem.dyn_ref::<HtmlFormElement>().unwrap();
+
+    let get = Closure::wrap(Box::new(move |ev: Event| {
+        ev.prevent_default();
+
+        let r = raft.clone();
+        spawn_local(async move {
+            let document = get_document();
+            let get_key_elem = document.get_element_by_id("get-key").unwrap();
+            let get_key = get_key_elem.dyn_ref::<HtmlInputElement>().unwrap();
+            let key = get_key.value();
+
+            if key.is_empty() {
+                return;
+            }
+            let val_elem = document.get_element_by_id("get-value").unwrap();
+            let val = val_elem.dyn_ref::<HtmlElement>().unwrap();
+            match r.get(key).await {
+                Ok(Some(ref v)) => val.set_inner_text(v),
+                Ok(None) => val.set_inner_text("NOT FOUND"),
+                Err(err) => console_log!("Error: {:?}", err),
+            }
+        });
+    }) as Box<dyn FnMut(Event)>);
+    get_form.set_onsubmit(Some(get.as_ref().unchecked_ref()));
+    get.forget();
 }
 
 fn generate_session_key() -> String {

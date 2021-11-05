@@ -26,5 +26,26 @@
       <div id="session-key"></div>
       <div id="raft"></div>
     </div>
+    <div id="controls">
+      <h3>Controls</h3>
+      <div>
+        <form id="set-form" action="#">
+          <label for="set-key">Key</label>
+          <input type="text" id="set-key" name="set-key" />
+          <label for="set-value">Value</label>
+          <input type="text" id="set-value" name="set-value" />
+          <input type="submit" value="Set" />
+        </form>
+      </div>
+      <br />
+      <div>
+        <form id="get-form" action="#">
+          <label for="get-key">Key</label>
+          <input type="text" id="get-key" name="get-key" />
+          <span id="get-value"></span>
+          <input type="submit" value="Get" />
+        </form>
+      </div>
+    </div>
   </body>
 </html>
