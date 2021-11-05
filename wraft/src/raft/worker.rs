@@ -96,10 +96,10 @@ pub struct RaftDebugState {
     peers: Vec<NodeId>,
     online_peers: Vec<NodeId>,
     voted_for: Option<NodeId>,
-    current_term: u64,
+    current_term: TermIndex,
 
-    commit_index: u64,
-    last_applied: u64,
+    commit_index: LogIndex,
+    last_applied: LogIndex,
     current_state: HashMap<String, String>,
 }
 
@@ -226,6 +226,24 @@ where
         }
     }
 
+    fn apply_log(&mut self) {
+        for entry in self
+            .state
+            .persistent
+            .sublog((self.state.last_applied + 1)..=self.state.commit_index)
+        {
+            match entry.cmd {
+                LogCmd::Set { key, data } => {
+                    self.state.current_state.insert(key, data);
+                }
+                LogCmd::Delete { ref key } => {
+                    self.state.current_state.remove(key);
+                }
+            }
+            self.state.last_applied = entry.idx;
+        }
+    }
+
     fn handle_new_peer(&mut self, peer: PeerTransport) {
         let (client, mut server) = peer.start();
         let peer_id = client.node_id();
@@ -261,6 +279,7 @@ impl RaftWorker<Follower> {
         let mut debug_interval = interval(Duration::from_secs(1));
 
         loop {
+            self.apply_log();
             select! {
                 res = self.state.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
@@ -324,6 +343,7 @@ impl RaftWorker<Candidate> {
         let mut timeout = self.election_timeout();
         let mut debug_interval = interval(Duration::from_secs(1));
         loop {
+            self.apply_log();
             select! {
                 res = votes_rx.next() => {
                     if res.is_some() {
@@ -437,8 +457,8 @@ impl RaftWorker<Leader> {
         // Initial heartbeat happens immediately
         let mut heartbeat = sleep(Duration::from_millis(0));
         loop {
-            // TODO: can probably skip this on most iterations of the loop
             self.advance_commit_index();
+            self.apply_log();
             select! {
                 res = resps_rx.next() => {
                     let (peer_id, idx, resp) = res.expect("response channel closed");
