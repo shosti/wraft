@@ -80,6 +80,7 @@ pub struct RaftDebugState {
 
     commit_index: u64,
     last_applied: u64,
+    snapshot: HashMap<String, String>,
 }
 
 pub fn run(
@@ -583,6 +584,7 @@ where
 
             commit_index: from.state.commit_index,
             last_applied: from.state.last_applied,
+            snapshot: from.state.persistent.snapshot(),
         }
     }
 }

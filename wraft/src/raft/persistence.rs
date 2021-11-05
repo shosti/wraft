@@ -1,5 +1,6 @@
 use crate::raft::errors::Error;
-use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
+use crate::raft::{LogCmd, LogEntry, LogIndex, NodeId, TermIndex};
+use std::collections::HashMap;
 use web_sys::Storage;
 
 #[derive(Debug)]
@@ -9,6 +10,7 @@ pub struct PersistentState {
     current_term: TermIndex,
     voted_for: Option<NodeId>,
     storage: Storage,
+    snapshot: HashMap<String, String>,
 }
 
 impl PersistentState {
@@ -22,17 +24,42 @@ impl PersistentState {
             last_log_index: 0,
             current_term: 0,
             voted_for: None,
+            snapshot: HashMap::new(),
         };
 
-        if let Some(term) = state.get(state.current_term_key().as_str()) {
+        if let Some(term) = state.get_persistent(state.current_term_key().as_str()) {
             state.set_current_term(term.parse().unwrap());
         }
 
-        if let Some(vote) = state.get(state.voted_for_key().as_str()) {
+        if let Some(vote) = state.get_persistent(state.voted_for_key().as_str()) {
             state.set_voted_for(Some(&vote));
         }
 
+        state.init_snapshot();
+
         state
+    }
+
+    // TODO: this is just for debugging, much to expensive for real usage
+    pub fn snapshot(&self) -> HashMap<String, String> {
+        self.snapshot.clone()
+    }
+
+    fn init_snapshot(&mut self) {
+        for idx in 1..=self.last_log_index {
+            self.play_log(idx);
+        }
+    }
+
+    fn play_log(&mut self, idx: LogIndex) {
+        match self.get_log(idx).unwrap().cmd {
+            LogCmd::Set { key, data } => {
+                self.snapshot.insert(key, data);
+            }
+            LogCmd::Delete { key } => {
+                self.snapshot.remove(&key);
+            }
+        }
     }
 
     pub fn last_log_index(&self) -> LogIndex {
@@ -89,7 +116,7 @@ impl PersistentState {
         self.current_term = term;
         let key = self.current_term_key();
         let val = term.to_string();
-        self.set(&key, &val);
+        self.set_persistent(&key, &val);
     }
 
     pub fn voted_for(&self) -> &Option<NodeId> {
@@ -101,7 +128,7 @@ impl PersistentState {
         match &val {
             Some(val) => {
                 self.voted_for = Some(val.to_string());
-                self.set(&key, val);
+                self.set_persistent(&key, val);
             }
             None => {
                 self.storage.remove_item(&key).unwrap();
@@ -110,11 +137,11 @@ impl PersistentState {
         }
     }
 
-    fn get(&self, key: &str) -> Option<String> {
+    fn get_persistent(&self, key: &str) -> Option<String> {
         self.storage.get_item(key).unwrap()
     }
 
-    fn set(&self, key: &str, val: &str) {
+    fn set_persistent(&self, key: &str, val: &str) {
         self.storage.set_item(key, val).unwrap();
     }
 

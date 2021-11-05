@@ -94,7 +94,7 @@ pub struct LogEntry {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LogCmd {
-    Set { key: String, data: Vec<u8> },
+    Set { key: String, data: String },
     Delete { key: String },
 }
 
