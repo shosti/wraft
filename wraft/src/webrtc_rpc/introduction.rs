@@ -126,9 +126,7 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
             let online = state.online.read().unwrap();
             p > &state.node_id && !online.contains(p)
         })
-        .map(|peer| {
-            async { introduce(*peer, ws.clone(), state.clone()).await }
-        })
+        .map(|peer| async { introduce(*peer, ws.clone(), state.clone()).await })
         .collect::<FuturesUnordered<_>>();
     while introductions.next().await.is_some() {}
     Ok(())
@@ -137,7 +135,11 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
 async fn introduce(peer_id: u64, ws: WebSocket, state: State) -> Result<(), Error> {
     let pc = new_peer_connection(peer_id, ws.clone(), state.clone())?;
     let dc = pc.create_data_channel(
-        format!("data-{:#x}-{:#x}-{:#x}", state.session_id, state.node_id, peer_id).as_str(),
+        format!(
+            "data-{:#x}-{:#x}-{:#x}",
+            state.session_id, state.node_id, peer_id
+        )
+        .as_str(),
     );
     let sdp_data = local_description(&pc).await?;
     state.insert_peer(peer_id, pc);

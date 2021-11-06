@@ -1,6 +1,6 @@
 use crate::console_log;
-use crate::raft::storage::Storage;
 use crate::raft::rpc_server::RpcServer;
+use crate::raft::storage::Storage;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
     ClientResponse, LogCmd, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
@@ -406,9 +406,7 @@ impl RaftWorker<Candidate> {
     }
 
     fn vote_for_self(&mut self) {
-        self.inner
-            .storage
-            .set_voted_for(Some(self.inner.node_id));
+        self.inner.storage.set_voted_for(Some(self.inner.node_id));
     }
 
     fn handle_rpc(&mut self, req: RpcRequest, resp_tx: oneshot::Sender<RpcResult>) -> StateChange {
@@ -545,9 +543,7 @@ impl RaftWorker<Leader> {
             if agree < self.quorum() - 1 {
                 break;
             }
-            if self.inner.storage.get_log(n).unwrap().term
-                != self.inner.storage.current_term()
-            {
+            if self.inner.storage.get_log(n).unwrap().term != self.inner.storage.current_term() {
                 break;
             }
             self.inner.commit_index = n;
@@ -761,12 +757,7 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
             .iter()
             .map(|p| (*p, from.inner.storage.last_log_index() + 1))
             .collect();
-        let match_indices = from
-            .inner
-            .peers
-            .iter()
-            .map(|p| (*p, 0))
-            .collect();
+        let match_indices = from.inner.peers.iter().map(|p| (*p, 0)).collect();
         let (responses_tx, responses_rx) = channel(100);
         let mut next = Self {
             inner: from.inner,

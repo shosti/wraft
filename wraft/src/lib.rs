@@ -152,7 +152,8 @@ fn get_join_session_key() -> Result<u128, std::num::ParseIntError> {
     let elem = get_document()
         .get_element_by_id("join-session-key")
         .expect("join-session-key input not found");
-    let val = elem.dyn_ref::<HtmlInputElement>()
+    let val = elem
+        .dyn_ref::<HtmlInputElement>()
         .expect("join-session-key should be an input element")
         .value();
     u128::from_str_radix(&val, 16)
