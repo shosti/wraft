@@ -27,15 +27,15 @@ impl Storage {
             snapshot: HashMap::new(),
         };
 
-        if let Some(term) = state.get_persistent(state.current_term_key().as_str()) {
+        if let Some(term) = state.get_persistent(&state.current_term_key()) {
             state.current_term = term.parse().unwrap();
         }
 
-        if let Some(vote) = state.get_persistent(state.voted_for_key().as_str()) {
+        if let Some(vote) = state.get_persistent(&state.voted_for_key()) {
             state.voted_for = Some(vote);
         }
 
-        if let Some(idx) = state.get_persistent(state.last_log_index_key().as_str()) {
+        if let Some(idx) = state.get_persistent(&state.last_log_index_key()) {
             state.last_log_index = idx.parse().unwrap();
         }
 
