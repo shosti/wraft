@@ -14,7 +14,7 @@ use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rand::{thread_rng, Rng};
-use std::cmp::{max, min};
+use std::cmp::max;
 use std::collections::HashMap;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
@@ -557,6 +557,8 @@ impl RaftWorker<Leader> {
     }
 
     fn append_entries(&self, peer_id: NodeId) {
+        const MAX_BATCH_SIZE: u64 = 10;
+
         let mut client = self.inner.peer_clients.get(&peer_id).unwrap().clone();
         if !client.is_connected() {
             return;
@@ -569,8 +571,13 @@ impl RaftWorker<Leader> {
         } else {
             0
         };
-        let last_entry = min(self.inner.storage.last_log_index(), next_index);
-        let entries = self.inner.storage.sublog(next_index..=last_entry);
+        let entries = self
+            .inner
+            .storage
+            .sublog(next_index..=(next_index + MAX_BATCH_SIZE));
+        let last_entry = entries
+            .last()
+            .map_or(self.inner.storage.last_log_index(), |e| e.idx);
         let req = RpcRequest::AppendEntries(AppendEntriesRequest {
             leader_id: self.inner.node_id,
             term: self.inner.storage.current_term(),
