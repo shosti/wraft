@@ -176,9 +176,7 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
                     Err(err) => println!("Error handling message: {:?}", err),
                 }
             }
-            Ok(tungstenite::Message::Pong(_)) => {
-                println!("Got pong (ids: {:?})", ids);
-            },
+            Ok(tungstenite::Message::Pong(_)) => (),
             Ok(tungstenite::Message::Close(_)) => (),
             Ok(msg) => println!("Unexpected message: {}", msg),
             Err(err) => println!("Error handling receiving message: {:?}", err),
