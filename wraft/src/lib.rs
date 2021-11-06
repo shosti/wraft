@@ -2,8 +2,9 @@ pub mod raft;
 pub mod util;
 mod webrtc_rpc;
 
-use crate::util::interval;
+use crate::util::sleep;
 use futures::prelude::*;
+use futures::select;
 use raft::Raft;
 use rand::{thread_rng, Rng};
 use std::time::Duration;
@@ -71,21 +72,14 @@ async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
     sk.set_inner_html(format!("<h2>Session key: {:032x}</h2>", session_key).as_str());
     hide_start_form();
 
-    let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
-    let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
-
     let raft = Raft::initiate(&hostname, session_key, cluster_size)
         .await
         .unwrap();
 
-    let mut debug_interval = interval(Duration::from_secs(1));
-    setup_controls(raft.clone());
+    setup_controls(raft);
 
-    while let Some(()) = debug_interval.next().await {
-        let s = raft.debug().await;
-        let content = format!("<pre>{:#?}</pre>", s);
-        raft_content.set_inner_html(&content);
-    }
+    future::pending::<()>().await;
+    unreachable!();
 }
 
 fn setup_controls(raft: Raft<String>) {
@@ -111,8 +105,7 @@ fn setup_controls(raft: Raft<String>) {
             if key.is_empty() || val.is_empty() {
                 return;
             }
-            let res = r.set(key, val).await;
-            console_log!("RES: {:#?}", res);
+            let _ = r.set(key, val).await;
         });
     }) as Box<dyn FnMut(Event)>);
     set_form.set_onsubmit(Some(set.as_ref().unchecked_ref()));
@@ -121,10 +114,11 @@ fn setup_controls(raft: Raft<String>) {
     let get_form_elem = document.get_element_by_id("get-form").unwrap();
     let get_form = get_form_elem.dyn_ref::<HtmlFormElement>().unwrap();
 
+    let get_raft = raft.clone();
     let get = Closure::wrap(Box::new(move |ev: Event| {
         ev.prevent_default();
 
-        let r = raft.clone();
+        let r = get_raft.clone();
         spawn_local(async move {
             let document = get_document();
             let get_key_elem = document.get_element_by_id("get-key").unwrap();
@@ -145,6 +139,43 @@ fn setup_controls(raft: Raft<String>) {
     }) as Box<dyn FnMut(Event)>);
     get_form.set_onsubmit(Some(get.as_ref().unchecked_ref()));
     get.forget();
+
+    let bench_elem = document.get_element_by_id("benchmark").unwrap();
+    let bench_form = bench_elem.dyn_ref::<HtmlFormElement>().unwrap();
+
+    let bench = Closure::wrap(Box::new(move |ev: Event| {
+        ev.prevent_default();
+
+        let perf = get_window().performance().unwrap();
+        let r = raft.clone();
+        spawn_local(async move {
+            console_log!("BEGINNING BENCHMARK");
+            let mut stop = sleep(Duration::from_secs(10));
+            let t0 = perf.now();
+            let mut n = 0;
+            loop {
+                select! {
+                    _ = stop => {
+                        break;
+                    }
+                    default => {
+                        r.set("iter".to_string(), n.to_string()).await.unwrap();
+                        n += 1;
+                    }
+                }
+            }
+            let t1 = perf.now();
+            let elapsed = t1 - t0;
+            console_log!(
+                "{} writes in {} milliseconds ({} writes/sec)",
+                n,
+                elapsed,
+                (n as f64) / ((elapsed as f64) / 1000.0)
+            );
+        });
+    }) as Box<dyn FnMut(Event)>);
+    bench_form.set_onsubmit(Some(bench.as_ref().unchecked_ref()));
+    bench.forget();
 }
 
 fn generate_session_key() -> u128 {
