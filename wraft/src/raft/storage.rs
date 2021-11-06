@@ -2,7 +2,7 @@ use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
-use std::{cmp::min, marker::PhantomData};
+use std::marker::PhantomData;
 
 #[derive(Debug)]
 pub struct Storage<T> {
@@ -87,13 +87,22 @@ where
     }
 
     // This explodes if you use it wrong!
-    pub fn append_log(&mut self, entry: LogEntry<T>) {
+    pub fn append_log(&mut self, entry: &LogEntry<T>) {
         let idx = self.increment_last_log_index();
         assert_eq!(idx, entry.idx);
 
         let key = self.log_key(idx);
-        let data = serde_json::to_string(&entry).unwrap();
+        let data = serde_json::to_string(entry).unwrap();
         self.storage.set_item(&key, &data).unwrap();
+    }
+
+    // Sets log entry at entry.idx and truncates the log from then on out
+    // (assuming all following logs are invalid)
+    pub fn overwrite_log(&mut self, entry: &LogEntry<T>) {
+        assert!(entry.idx >= self.last_log_index());
+        assert!(entry.idx != 0);
+        self.set_last_log_index(entry.idx - 1);
+        self.append_log(entry);
     }
 
     pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry<T>> {
@@ -105,11 +114,6 @@ where
         let data = self.storage.get_item(&key).unwrap().unwrap(); // Christmas!
         let entry: LogEntry<T> = serde_json::from_str(&data).unwrap();
         Some(entry)
-    }
-
-    pub fn truncate_from(&mut self, idx: LogIndex) {
-        let new_index = min(idx - 1, self.last_log_index());
-        self.set_last_log_index(new_index);
     }
 
     pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry<T>> {

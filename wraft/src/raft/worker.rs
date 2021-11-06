@@ -210,12 +210,11 @@ where
         for e in &req.entries {
             if let Some(existing) = self.inner.storage.get_log(e.idx) {
                 if existing.term != e.term {
-                    self.inner.storage.truncate_from(e.idx);
+                    self.inner.storage.overwrite_log(e);
                 }
+            } else {
+                self.inner.storage.append_log(e);
             }
-        }
-        for e in req.entries {
-            self.inner.storage.append_log(e);
         }
 
         if req.leader_commit > self.inner.commit_index {
@@ -729,7 +728,7 @@ where
             idx,
             term: self.inner.storage.current_term(),
         };
-        self.inner.storage.append_log(entry);
+        self.inner.storage.append_log(&entry);
 
         self.state.in_flight.insert(idx, resp_tx);
 
