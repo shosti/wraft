@@ -153,24 +153,29 @@ fn setup_controls(raft: Raft<String>) {
             let mut stop = sleep(Duration::from_secs(10));
             let t0 = perf.now();
             let mut n = 0;
+            let mut errs = 0;
             loop {
                 select! {
                     _ = stop => {
                         break;
                     }
                     default => {
-                        r.set("iter".to_string(), n.to_string()).await.unwrap();
-                        n += 1;
+                        if let Ok(()) = r.set("iter".to_string(), n.to_string()).await {
+                            n += 1;
+                        } else {
+                            errs += 1;
+                        }
                     }
                 }
             }
             let t1 = perf.now();
             let elapsed = t1 - t0;
             console_log!(
-                "{} writes in {} milliseconds ({} writes/sec)",
+                "{} writes in {} milliseconds ({} writes/sec, {} errors)",
                 n,
                 elapsed,
-                (n as f64) / ((elapsed as f64) / 1000.0)
+                (n as f64) / ((elapsed as f64) / 1000.0),
+                errs,
             );
         });
     }) as Box<dyn FnMut(Event)>);
