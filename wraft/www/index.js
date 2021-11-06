@@ -1,1 +1,1 @@
-import * as wasm from "wrath";
+import * as wasm from "wraft";

@@ -27,7 +27,7 @@
   },
   "homepage": "https://github.com/rustwasm/create-wasm-app#readme",
   "dependencies": {
-    "wrath": "file:../pkg"
+    "wraft": "file:../pkg"
   },
   "devDependencies": {
     "hello-wasm-pack": "^0.1.0",
