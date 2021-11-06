@@ -1,6 +1,6 @@
 pub mod errors;
-mod storage;
 mod rpc_server;
+mod storage;
 mod worker;
 
 use crate::console_log;
@@ -15,14 +15,16 @@ use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rpc_server::RpcServer;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
 pub type LogIndex = u64;
 pub type TermIndex = u64;
-pub type NodeId = String;
+pub type NodeId = u64;
 pub type RpcMessage = (
     RpcRequest,
     oneshot::Sender<Result<RpcResponse, transport::Error>>,
@@ -111,22 +113,23 @@ const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
 
 impl Raft {
     pub async fn initiate(
-        node_id: NodeId,
-        session_key: String,
+        hostname: String,
+        session_key: u128,
         cluster_size: usize,
     ) -> Result<Self, Error> {
         let (peers_tx, mut peers_rx) = channel(10);
         let mut peers = Vec::new();
         let mut peer_clients = HashMap::new();
+        let node_id = Self::generate_node_id(hostname, session_key);
 
-        spawn_local(introduce(node_id.clone(), session_key.clone(), peers_tx));
+        spawn_local(introduce(node_id, session_key, peers_tx));
 
         let target_size = cluster_size - 1;
         while peers.len() < target_size {
             let peer = peers_rx.next().await.ok_or(Error::NotEnoughPeers)?;
-            console_log!("Got client: {}", peer.node_id());
+            console_log!("Got client: {:016x}", peer.node_id());
 
-            let peer_id = peer.node_id().clone();
+            let peer_id = peer.node_id();
             let (client, server) = peer.start();
             peer_clients.insert(peer_id, client);
             peers.push(server);
@@ -142,8 +145,8 @@ impl Raft {
             });
         }
         let (client_tx, debug_rx) = worker::run(
-            node_id.clone(),
-            session_key.clone(),
+            node_id,
+            session_key,
             rpc_rx,
             peers_rx,
             peer_clients,
@@ -203,5 +206,12 @@ impl Raft {
                 Err(ClientError::Timeout)
             }
         }
+    }
+
+    fn generate_node_id(hostname: String, session_key: u128) -> NodeId {
+        let mut h = DefaultHasher::new();
+        hostname.hash(&mut h);
+        session_key.hash(&mut h);
+        h.finish()
     }
 }

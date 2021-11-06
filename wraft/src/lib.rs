@@ -4,7 +4,6 @@ mod webrtc_rpc;
 
 use futures::prelude::*;
 use raft::Raft;
-use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -12,8 +11,6 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{
     Document, Event, HtmlButtonElement, HtmlElement, HtmlFormElement, HtmlInputElement, Window,
 };
-
-const SESSION_KEY_LEN: usize = 20;
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
@@ -53,10 +50,7 @@ pub async fn start() {
         ev.prevent_default();
 
         let hn = hn_join.clone();
-        let session_key = get_join_session_key();
-        if session_key.len() != SESSION_KEY_LEN {
-            panic!("BAD SESSION KEY");
-        }
+        let session_key = get_join_session_key().unwrap();
 
         spawn_local(run_raft(hn, session_key, 3));
     }) as Box<dyn FnMut(Event)>);
@@ -66,19 +60,19 @@ pub async fn start() {
     unreachable!();
 }
 
-async fn run_raft(node_id: String, session_key: String, cluster_size: usize) {
+async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
     let document = get_document();
     let session_key_elem = document
         .get_element_by_id("session-key")
         .expect("#session-key not found");
     let sk = session_key_elem.dyn_ref::<HtmlElement>().unwrap();
-    sk.set_inner_html(format!("<h2>Session key: {}</h2>", session_key).as_str());
+    sk.set_inner_html(format!("<h2>Session key: {:032x}</h2>", session_key).as_str());
     hide_start_form();
 
     let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
     let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
 
-    let raft = Raft::initiate(node_id, session_key, cluster_size)
+    let raft = Raft::initiate(hostname, session_key, cluster_size)
         .await
         .unwrap();
 
@@ -150,21 +144,18 @@ fn setup_controls(raft: Raft) {
     get.forget();
 }
 
-fn generate_session_key() -> String {
-    thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(20)
-        .map(char::from)
-        .collect()
+fn generate_session_key() -> u128 {
+    thread_rng().gen()
 }
 
-fn get_join_session_key() -> String {
+fn get_join_session_key() -> Result<u128, std::num::ParseIntError> {
     let elem = get_document()
         .get_element_by_id("join-session-key")
         .expect("join-session-key input not found");
-    elem.dyn_ref::<HtmlInputElement>()
+    let val = elem.dyn_ref::<HtmlInputElement>()
         .expect("join-session-key should be an input element")
-        .value()
+        .value();
+    u128::from_str_radix(&val, 16)
 }
 
 fn hide_start_form() {

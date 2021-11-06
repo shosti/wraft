@@ -12,29 +12,29 @@ pub enum Command {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Join {
-    pub node_id: String,
-    pub session_id: String,
+    pub node_id: u64,
+    pub session_id: u128,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Session {
-    pub session_id: String,
-    pub online: HashSet<String>,
+    pub session_id: u128,
+    pub online: HashSet<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Offer {
-    pub session_id: String,
-    pub node_id: String,
-    pub target_id: String,
+    pub session_id: u128,
+    pub node_id: u64,
+    pub target_id: u64,
     pub sdp_data: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IceCandidate {
-    pub session_id: String,
-    pub node_id: String,
-    pub target_id: String,
+    pub session_id: u128,
+    pub node_id: u64,
+    pub target_id: u64,
     pub candidate: String,
     pub sdp_mid: Option<String>,
 }

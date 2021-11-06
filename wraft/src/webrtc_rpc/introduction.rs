@@ -22,55 +22,55 @@ use webrtc_introducer_types::{Command, IceCandidate, Join, Offer, Session};
 static INTRODUCER: &str = "wss://webrtc-introducer.herokuapp.com";
 static ACK: &str = "ACK";
 
-type PeerInfo = (String, RtcPeerConnection, RtcDataChannel);
+type PeerInfo = (u64, RtcPeerConnection, RtcDataChannel);
 
 #[derive(Clone)]
 struct State {
-    node_id: Arc<String>,
-    session_id: Arc<String>,
-    peers: Arc<RwLock<HashMap<String, RtcPeerConnection>>>,
-    online: Arc<RwLock<HashSet<String>>>,
+    node_id: u64,
+    session_id: u128,
+    peers: Arc<RwLock<HashMap<u64, RtcPeerConnection>>>,
+    online: Arc<RwLock<HashSet<u64>>>,
     peer_tx: Sender<PeerInfo>,
 }
 
 impl State {
-    pub fn new(node_id: &str, session_id: &str, peer_tx: Sender<PeerInfo>) -> Self {
+    pub fn new(node_id: u64, session_id: u128, peer_tx: Sender<PeerInfo>) -> Self {
         Self {
-            node_id: Arc::new(node_id.to_string()),
-            session_id: Arc::new(session_id.to_string()),
+            node_id,
+            session_id,
             peers: Arc::new(RwLock::new(HashMap::new())),
             online: Arc::new(RwLock::new(HashSet::new())),
             peer_tx,
         }
     }
 
-    pub fn insert_peer(&self, peer_id: &str, pc: RtcPeerConnection) {
+    pub fn insert_peer(&self, peer_id: u64, pc: RtcPeerConnection) {
         let mut peers = self.peers.write().unwrap();
         let mut online = self.online.write().unwrap();
-        peers.insert(peer_id.to_string(), pc);
-        online.insert(peer_id.to_string());
+        peers.insert(peer_id, pc);
+        online.insert(peer_id);
     }
 
-    pub async fn send_peer(&self, peer_id: &str, dc: RtcDataChannel) -> Result<(), Error> {
+    pub async fn send_peer(&self, peer_id: u64, dc: RtcDataChannel) -> Result<(), Error> {
         let mut tx = self.peer_tx.clone();
         let pc;
         {
             let mut peers = self.peers.write().unwrap();
-            if let Some(p) = peers.remove(peer_id) {
+            if let Some(p) = peers.remove(&peer_id) {
                 pc = p;
             } else {
-                panic!("peer {} sent twice", peer_id);
+                panic!("peer {:#} sent twice", peer_id);
             }
         }
-        tx.send((peer_id.to_string(), pc, dc)).await?;
+        tx.send((peer_id, pc, dc)).await?;
 
         Ok(())
     }
 }
 
 pub async fn initiate(
-    node_id: &str,
-    session_id: &str,
+    node_id: u64,
+    session_id: u128,
     mut peers: Sender<PeerTransport>,
 ) -> Result<(), Error> {
     let (peer_tx, mut peer_rx) = channel::<PeerInfo>(10);
@@ -85,7 +85,7 @@ pub async fn initiate(
             p = peer_rx.next() => {
                 let (done_tx, done_rx) = oneshot::channel();
                 let (peer_id, dc, pc) = p.unwrap();
-                let peer = PeerTransport::new(peer_id.clone(), dc, pc, done_tx);
+                let peer = PeerTransport::new(peer_id, dc, pc, done_tx);
 
                 let online = state.online.clone();
                 spawn_local(async move {
@@ -124,24 +124,23 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
         .iter()
         .filter(|&p| {
             let online = state.online.read().unwrap();
-            p > &*state.node_id && !online.contains(p)
+            p > &state.node_id && !online.contains(p)
         })
-        .map(|p| {
-            let peer = p.clone();
-            async { introduce(peer, ws.clone(), state.clone()).await }
+        .map(|peer| {
+            async { introduce(*peer, ws.clone(), state.clone()).await }
         })
         .collect::<FuturesUnordered<_>>();
     while introductions.next().await.is_some() {}
     Ok(())
 }
 
-async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), Error> {
-    let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
+async fn introduce(peer_id: u64, ws: WebSocket, state: State) -> Result<(), Error> {
+    let pc = new_peer_connection(peer_id, ws.clone(), state.clone())?;
     let dc = pc.create_data_channel(
-        format!("data-{}-{}-{}", state.session_id, state.node_id, peer_id).as_str(),
+        format!("data-{:#x}-{:#x}-{:#x}", state.session_id, state.node_id, peer_id).as_str(),
     );
     let sdp_data = local_description(&pc).await?;
-    state.insert_peer(&peer_id, pc);
+    state.insert_peer(peer_id, pc);
 
     let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
     let dc_clone = dc.clone();
@@ -150,30 +149,30 @@ async fn introduce(peer_id: String, ws: WebSocket, state: State) -> Result<(), E
         done_tx.send(()).unwrap();
     });
 
-    send_offer(&peer_id, &sdp_data, ws, state.clone()).await?;
+    send_offer(peer_id, &sdp_data, ws, state.clone()).await?;
 
     done_rx.await.unwrap();
     assert_eq!(dc.ready_state(), RtcDataChannelState::Open);
 
-    state.send_peer(&peer_id, dc).await?;
+    state.send_peer(peer_id, dc).await?;
 
     Ok(())
 }
 
 fn new_peer_connection(
-    peer_id: String,
+    peer_id: u64,
     ws: WebSocket,
     state: State,
 ) -> Result<RtcPeerConnection, Error> {
     let pc = RtcPeerConnection::new()?;
-    let session_id = state.session_id.to_string();
-    let node_id = state.node_id.to_string();
+    let session_id = state.session_id;
+    let node_id = state.node_id;
     let ice_cb = Closure::wrap(Box::new(move |ev: RtcPeerConnectionIceEvent| {
         if let Some(candidate) = ev.candidate() {
             let cmd = Command::IceCandidate(IceCandidate {
-                session_id: session_id.clone(),
-                node_id: node_id.clone(),
-                target_id: peer_id.clone(),
+                session_id,
+                node_id,
+                target_id: peer_id,
                 candidate: candidate.candidate(),
                 sdp_mid: candidate.sdp_mid(),
             });
@@ -194,8 +193,8 @@ fn send_command(ws: WebSocket, command: &Command) -> Result<(), Error> {
 
 async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), Error> {
     let peer_id = offer.node_id;
-    let pc = new_peer_connection(peer_id.clone(), ws.clone(), state.clone())?;
-    state.insert_peer(&peer_id, pc.clone());
+    let pc = new_peer_connection(peer_id, ws.clone(), state.clone())?;
+    state.insert_peer(peer_id, pc.clone());
 
     let (dc_tx, dc_rx) = futures::channel::oneshot::channel::<RtcDataChannel>();
 
@@ -206,10 +205,10 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
     });
 
     let answer_sdp = remote_description(&offer.sdp_data, &pc).await?;
-    send_answer(&peer_id, &answer_sdp, ws, state.clone()).await?;
+    send_answer(peer_id, &answer_sdp, ws, state.clone()).await?;
 
     let dc = dc_rx.await.unwrap();
-    state.send_peer(&peer_id, dc).await?;
+    state.send_peer(peer_id, dc).await?;
 
     Ok(())
 }
@@ -222,7 +221,7 @@ async fn handle_answer(answer: Offer, state: State) -> Result<(), Error> {
         if let Some(p) = pc_opt {
             pc = p.clone();
         } else {
-            return Err(Error::AlreadyInitialized(answer.node_id.clone()));
+            return Err(Error::AlreadyInitialized(answer.node_id));
         }
     }
     let mut desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
@@ -361,39 +360,39 @@ async fn remote_description(sdp_data: &str, pc: &RtcPeerConnection) -> Result<St
 }
 
 async fn send_offer(
-    peer_id: &str,
+    peer_id: u64,
     sdp_data: &str,
     ws: WebSocket,
     state: State,
 ) -> Result<(), Error> {
     let cmd = Command::Offer(Offer {
-        session_id: state.session_id.to_string(),
-        node_id: state.node_id.to_string(),
-        target_id: peer_id.to_string(),
+        session_id: state.session_id,
+        node_id: state.node_id,
+        target_id: peer_id,
         sdp_data: sdp_data.to_string(),
     });
     send_command(ws, &cmd)
 }
 
 async fn send_answer(
-    peer_id: &str,
+    peer_id: u64,
     answer_sdp: &str,
     ws: WebSocket,
     state: State,
 ) -> Result<(), Error> {
     let cmd = Command::Answer(Offer {
-        session_id: state.session_id.to_string(),
-        node_id: state.node_id.to_string(),
-        target_id: peer_id.to_string(),
+        session_id: state.session_id,
+        node_id: state.node_id,
+        target_id: peer_id,
         sdp_data: answer_sdp.to_string(),
     });
     send_command(ws, &cmd)
 }
 
-async fn send_join_command(node_id: &str, session_id: &str, ws: WebSocket) -> Result<(), Error> {
+async fn send_join_command(node_id: u64, session_id: u128, ws: WebSocket) -> Result<(), Error> {
     let cmd = Command::Join(Join {
-        node_id: node_id.to_string(),
-        session_id: session_id.to_string(),
+        node_id,
+        session_id,
     });
     send_command(ws, &cmd)
 }

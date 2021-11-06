@@ -63,7 +63,7 @@ enum StateChange {
 struct RaftWorkerInner {
     leader_id: Option<NodeId>,
     node_id: NodeId,
-    session_key: String,
+    session_key: u128,
     cluster_size: usize,
     client_rx: Receiver<ClientMessage>,
     rpc_rx: Receiver<RpcMessage>,
@@ -91,7 +91,7 @@ pub struct RaftDebugState {
     state: String,
     leader_id: Option<NodeId>,
     node_id: NodeId,
-    session_key: String,
+    session_key: u128,
     cluster_size: usize,
     peers: Vec<NodeId>,
     online_peers: Vec<NodeId>,
@@ -106,7 +106,7 @@ pub struct RaftDebugState {
 
 pub fn run(
     node_id: NodeId,
-    session_key: String,
+    session_key: u128,
     rpc_rx: Receiver<RpcMessage>,
     peers_rx: Receiver<PeerTransport>,
     peer_clients: HashMap<NodeId, RpcClient>,
@@ -116,7 +116,7 @@ pub fn run(
     let (debug_tx, debug_rx) = channel(100);
 
     let cluster_size = peer_clients.len() + 1;
-    let storage = Storage::new(&session_key);
+    let storage = Storage::new(session_key);
     let peers = peer_clients.keys().cloned().collect();
     let inner = RaftWorkerInner {
         leader_id: None,
@@ -176,7 +176,7 @@ where
             && (voted_for.is_none() || *voted_for.as_ref().unwrap() == req.candidate)
             && req.last_log_index >= self.inner.commit_index
         {
-            self.inner.storage.set_voted_for(Some(&req.candidate));
+            self.inner.storage.set_voted_for(Some(req.candidate));
 
             RequestVoteResponse {
                 term: req.last_log_term,
@@ -320,7 +320,7 @@ impl RaftWorker<Follower> {
             }
             RpcRequest::AppendEntries(req) => {
                 self.inner.storage.update_term(req.term);
-                self.inner.leader_id = Some(req.leader_id.clone());
+                self.inner.leader_id = Some(req.leader_id);
                 let resp = self.handle_append_entries(req);
                 resp_tx
                     .send(Ok(RpcResponse::AppendEntries(resp)))
@@ -408,7 +408,7 @@ impl RaftWorker<Candidate> {
     fn vote_for_self(&mut self) {
         self.inner
             .storage
-            .set_voted_for(Some(&self.inner.node_id));
+            .set_voted_for(Some(self.inner.node_id));
     }
 
     fn handle_rpc(&mut self, req: RpcRequest, resp_tx: oneshot::Sender<RpcResult>) -> StateChange {
@@ -452,7 +452,7 @@ impl RaftWorker<Candidate> {
         let (votes_tx, votes_rx) = channel(self.inner.cluster_size);
         let req = RpcRequest::RequestVote(RequestVoteRequest {
             term: self.inner.storage.current_term(),
-            candidate: self.inner.node_id.to_string(),
+            candidate: self.inner.node_id,
             last_log_index: self.inner.storage.last_log_index(),
             last_log_term: self.inner.storage.last_log_term(),
         });
@@ -520,7 +520,7 @@ impl RaftWorker<Leader> {
                 }
                 _ = heartbeat => {
                     for peer in &self.inner.peers {
-                        self.append_entries(peer.to_string());
+                        self.append_entries(*peer);
                     }
                     heartbeat = self.heartbeat_timeout();
                 }
@@ -576,7 +576,7 @@ impl RaftWorker<Leader> {
         let last_entry = min(self.inner.storage.last_log_index(), next_index);
         let entries = self.inner.storage.sublog(next_index..=last_entry);
         let req = RpcRequest::AppendEntries(AppendEntriesRequest {
-            leader_id: self.inner.node_id.to_string(),
+            leader_id: self.inner.node_id,
             term: self.inner.storage.current_term(),
             prev_log_index,
             prev_log_term,
@@ -759,13 +759,13 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
             .inner
             .peers
             .iter()
-            .map(|p| (p.to_string(), from.inner.storage.last_log_index() + 1))
+            .map(|p| (*p, from.inner.storage.last_log_index() + 1))
             .collect();
         let match_indices = from
             .inner
             .peers
             .iter()
-            .map(|p| (p.to_string(), 0))
+            .map(|p| (*p, 0))
             .collect();
         let (responses_tx, responses_rx) = channel(100);
         let mut next = Self {
@@ -778,7 +778,7 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
                 in_flight: HashMap::new(),
             },
         };
-        next.inner.leader_id = Some(next.inner.node_id.clone());
+        next.inner.leader_id = Some(next.inner.node_id);
         next
     }
 }
@@ -790,9 +790,9 @@ where
     fn from(from: &RaftWorker<S>) -> Self {
         Self {
             state: format!("{:?}", from.state),
-            leader_id: from.inner.leader_id.clone(),
-            node_id: from.inner.node_id.clone(),
-            session_key: from.inner.session_key.clone(),
+            leader_id: from.inner.leader_id,
+            node_id: from.inner.node_id,
+            session_key: from.inner.session_key,
             cluster_size: from.inner.cluster_size,
             peers: from.inner.peers.clone(),
             online_peers: from
@@ -800,9 +800,9 @@ where
                 .peer_clients
                 .iter()
                 .filter(|(_, c)| c.is_connected())
-                .map(|(k, _)| k.to_string())
+                .map(|(k, _)| *k)
                 .collect(),
-            voted_for: from.inner.storage.voted_for().clone(),
+            voted_for: *from.inner.storage.voted_for(),
             current_term: from.inner.storage.current_term(),
             last_log_index: from.inner.storage.last_log_index(),
 

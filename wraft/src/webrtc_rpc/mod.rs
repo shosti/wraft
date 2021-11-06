@@ -3,8 +3,8 @@ pub mod transport;
 use futures::channel::mpsc::Sender;
 use transport::PeerTransport;
 
-pub async fn introduce(id: String, session_id: String, peers_tx: Sender<PeerTransport>) {
-    introduction::initiate(&id, &session_id, peers_tx)
+pub async fn introduce(id: u64, session_id: u128, peers_tx: Sender<PeerTransport>) {
+    introduction::initiate(id, session_id, peers_tx)
         .await
         .unwrap();
 }
@@ -16,7 +16,7 @@ pub mod error {
     pub enum Error {
         Js(JsValue),
         Rust(Box<dyn std::error::Error>),
-        AlreadyInitialized(String),
+        AlreadyInitialized(u64),
     }
 
     impl From<JsValue> for Error {

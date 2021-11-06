@@ -34,7 +34,7 @@ enum Message<Req, Resp> {
 }
 
 pub struct PeerTransport {
-    node_id: String,
+    node_id: u64,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
     done: oneshot::Sender<()>,
@@ -42,7 +42,7 @@ pub struct PeerTransport {
 
 #[derive(Debug)]
 pub struct Server<Req, Resp> {
-    node_id: String,
+    node_id: u64,
     connection: RtcPeerConnection,
     data_channel: RtcDataChannel,
     server_req_rx: Receiver<RequestMessage<Req, Resp>>,
@@ -55,7 +55,7 @@ pub struct Server<Req, Resp> {
 
 #[derive(Debug, Clone)]
 pub struct Client<Req, Resp> {
-    node_id: Arc<String>,
+    node_id: u64,
     connected: Arc<AtomicBool>,
     req_tx: Sender<RequestMessage<Req, Resp>>,
 }
@@ -67,7 +67,7 @@ pub trait RequestHandler<Req, Resp> {
 
 impl PeerTransport {
     pub fn new(
-        node_id: String,
+        node_id: u64,
         connection: RtcPeerConnection,
         data_channel: RtcDataChannel,
         done: oneshot::Sender<()>,
@@ -100,7 +100,7 @@ impl PeerTransport {
 
         let mut server = Server {
             server_req_rx,
-            node_id: self.node_id.clone(),
+            node_id: self.node_id,
             data_channel: self.data_channel,
             connection: self.connection,
             done: Some(self.done),
@@ -117,15 +117,15 @@ impl PeerTransport {
 
         let client = Client {
             connected: Arc::new(true.into()),
-            node_id: Arc::new(self.node_id),
+            node_id: self.node_id,
             req_tx: client_req_tx,
         };
 
         (client, server)
     }
 
-    pub fn node_id(&self) -> String {
-        self.node_id.clone()
+    pub fn node_id(&self) -> u64 {
+        self.node_id
     }
 }
 
@@ -199,7 +199,7 @@ where
         mut client_resp_tx: Sender<Message<Req, Resp>>,
         mut server_req_tx: Sender<RequestMessage<Req, Resp>>,
     ) {
-        let node_id = self.node_id.clone();
+        let node_id = self.node_id;
 
         let cb = Closure::once(move || {
             console_log!("lost data channel for {}", node_id);
@@ -332,8 +332,8 @@ async fn handle_client_requests<Req, Resp>(
 }
 
 impl<Req, Resp> Client<Req, Resp> {
-    pub fn node_id(&self) -> String {
-        self.node_id.to_string()
+    pub fn node_id(&self) -> u64 {
+        self.node_id
     }
 
     pub fn is_connected(&self) -> bool {

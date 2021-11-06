@@ -16,8 +16,8 @@ use webrtc_introducer_types::{Command, Session};
 
 #[derive(Clone, Default)]
 struct Channels {
-    messages: Arc<RwLock<HashMap<String, Sender<Command>>>>,
-    online: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    messages: Arc<RwLock<HashMap<u128, Sender<Command>>>>,
+    online: Arc<RwLock<HashMap<u128, HashSet<u64>>>>,
 }
 
 struct Headers {}
@@ -37,58 +37,58 @@ impl server::Callback for Headers {
 }
 
 impl Channels {
-    pub fn get_messages(&self, session_id: &str) -> Option<Sender<Command>> {
+    pub fn get_messages(&self, session_id: u128) -> Option<Sender<Command>> {
         let m = self.messages.read().unwrap();
-        m.get(session_id).cloned()
+        m.get(&session_id).cloned()
     }
 
-    pub fn joined(&self, node_id: &str, session_id: &str) -> Result<(), Error> {
+    pub fn joined(&self, node_id: u64, session_id: u128) -> Result<(), Error> {
         {
             let mut os = self.online.write().unwrap();
             let o = os
-                .entry(session_id.to_string())
+                .entry(session_id)
                 .or_insert_with(HashSet::new);
-            o.insert(node_id.to_string());
+            o.insert(node_id);
         }
         self.broadcast_session_info(session_id)
     }
 
-    pub fn left(&self, node_id: &str, session_id: &str) -> Result<(), Error> {
+    pub fn left(&self, node_id: u64, session_id: u128) -> Result<(), Error> {
         {
             let mut o = self.online.write().unwrap();
-            let online = o.get_mut(session_id).unwrap();
-            online.remove(node_id);
+            let online = o.get_mut(&session_id).unwrap();
+            online.remove(&node_id);
         }
         self.broadcast_session_info(session_id)
     }
 
-    pub fn broadcast(self, session_id: &str, command: Command) -> Result<(), Error> {
+    pub fn broadcast(self, session_id: u128, command: Command) -> Result<(), Error> {
         let m = self.messages.read().unwrap();
         let tx = m
-            .get(session_id)
-            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+            .get(&session_id)
+            .ok_or_else(|| Error::SessionNotFound(format!("{:032x}", session_id)))?;
         tx.send(command)?;
         Ok(())
     }
 
-    pub fn broadcast_session_info(&self, session_id: &str) -> Result<(), Error> {
+    pub fn broadcast_session_info(&self, session_id: u128) -> Result<(), Error> {
         let onlines = self.online.read().unwrap();
-        let online = onlines.get(session_id).unwrap();
+        let online = onlines.get(&session_id).unwrap();
         let status = Session {
-            session_id: session_id.to_string(),
+            session_id,
             online: online.clone(),
         };
         let cmd = Command::SessionStatus(status);
         self.clone().broadcast(session_id, cmd)
     }
 
-    pub fn ensure_session(&self, session_id: &str) {
+    pub fn ensure_session(&self, session_id: u128) {
         let mut m = self.messages.write().unwrap();
-        if m.contains_key(session_id) {
+        if m.contains_key(&session_id) {
             return;
         }
         let (tx, _rx) = channel(10);
-        m.insert(session_id.to_string(), tx);
+        m.insert(session_id, tx);
     }
 }
 
@@ -117,14 +117,14 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
     let cb = Headers {};
     let conn = accept_hdr_async(socket, cb).await?;
     let (mut send, mut recv) = conn.split();
-    let (join_tx, mut join_rx) = mpsc::channel::<(String, String)>(1);
+    let (join_tx, mut join_rx) = mpsc::channel::<(u64, u128)>(1);
     let (left_tx, mut left_rx) = mpsc::channel::<()>(1);
     let ch = channels.clone();
     let recv_handle: tokio::task::JoinHandle<Result<(), Error>> = tokio::spawn(async move {
         if let Some((node_id, session_id)) = join_rx.recv().await {
-            ch.ensure_session(&session_id);
-            let mut rx = ch.get_messages(&session_id).unwrap().subscribe();
-            ch.joined(&node_id, &session_id)?;
+            ch.ensure_session(session_id);
+            let mut rx = ch.get_messages(session_id).unwrap().subscribe();
+            ch.joined(node_id, session_id)?;
             let mut ping_interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 select! {
@@ -186,7 +186,7 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
     left_tx.send(()).await?;
     recv_handle.await.unwrap()?;
     if let Some((node_id, session_id)) = ids {
-        channels.left(&node_id, &session_id)?;
+        channels.left(node_id, session_id)?;
     }
     Ok(())
 }
@@ -194,24 +194,24 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
 async fn process_message(
     data: &[u8],
     channels: Channels,
-    join_tx: mpsc::Sender<(String, String)>,
-) -> Result<Option<(String, String)>, Error> {
+    join_tx: mpsc::Sender<(u64, u128)>,
+) -> Result<Option<(u64, u128)>, Error> {
     let cmd: Command = bincode::deserialize(data)?;
     let mut ids = None;
     match cmd {
         Command::Join(join) => {
             let info = (join.node_id, join.session_id);
-            ids = Some(info.clone());
+            ids = Some(info);
             join_tx.send(info).await?;
         }
         Command::Offer(ref offer) => {
-            channels.broadcast(&offer.session_id, cmd.clone())?;
+            channels.broadcast(offer.session_id, cmd.clone())?;
         }
         Command::Answer(ref answer) => {
-            channels.broadcast(&answer.session_id, cmd.clone())?;
+            channels.broadcast(answer.session_id, cmd.clone())?;
         }
         Command::IceCandidate(ref candidate) => {
-            channels.broadcast(&candidate.session_id, cmd.clone())?;
+            channels.broadcast(candidate.session_id, cmd.clone())?;
         }
         _ => unreachable!(),
     }

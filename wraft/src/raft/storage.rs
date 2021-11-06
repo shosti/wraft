@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 #[derive(Debug)]
 pub struct Storage {
-    session_key: String,
+    session_key: u128,
     last_log_index: LogIndex,
     current_term: TermIndex,
     voted_for: Option<NodeId>,
@@ -14,13 +14,13 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn new(session_key: &str) -> Self {
+    pub fn new(session_key: u128) -> Self {
         let window = web_sys::window().expect("no global window");
         let storage = window.local_storage().expect("no local storage").unwrap();
 
         let mut state = Self {
             storage,
-            session_key: session_key.to_string(),
+            session_key,
             last_log_index: 0,
             current_term: 0,
             voted_for: None,
@@ -32,7 +32,7 @@ impl Storage {
         }
 
         if let Some(vote) = state.get_persistent(&state.voted_for_key()) {
-            state.voted_for = Some(vote);
+            state.voted_for = Some(vote.parse().unwrap());
         }
 
         if let Some(idx) = state.get_persistent(&state.last_log_index_key()) {
@@ -131,12 +131,13 @@ impl Storage {
         &self.voted_for
     }
 
-    pub fn set_voted_for(&mut self, val: Option<&str>) {
+    pub fn set_voted_for(&mut self, val: Option<NodeId>) {
         let key = self.voted_for_key();
-        match &val {
+        match val {
             Some(val) => {
-                self.voted_for = Some(val.to_string());
-                self.set_persistent(&key, val);
+                self.voted_for = Some(val);
+                let sval = val.to_string();
+                self.set_persistent(&key, &sval);
             }
             None => {
                 self.storage.remove_item(&key).unwrap();
