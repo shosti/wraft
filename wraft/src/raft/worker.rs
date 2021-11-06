@@ -513,17 +513,17 @@ where
                 }
                 res = self.inner.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
-                    if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
+                    if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx, &mut heartbeat) {
                         return RaftWorkerState::Follower(self.into());
                     }
                 }
                 res = self.inner.client_rx.next() => {
                     let (req, resp_tx) = res.expect("client channel closed");
-                    self.handle_client_request(req, resp_tx);
+                    self.handle_client_request(req, resp_tx, &mut heartbeat);
                 }
                 _ = heartbeat => {
-                    for peer in &self.inner.peers {
-                        self.append_entries(*peer);
+                    for &peer in &self.inner.peers {
+                        self.append_entries(peer);
                     }
                     heartbeat = self.heartbeat_timeout();
                 }
@@ -643,6 +643,7 @@ where
         &mut self,
         req: RpcRequest<T>,
         resp_tx: oneshot::Sender<Result<RpcResponse<T>, transport::Error>>,
+        heartbeat: &mut Sleep,
     ) -> StateChange {
         let term = self.inner.storage.current_term();
         match req {
@@ -683,7 +684,7 @@ where
                         let _ = resp_tx.send(Ok(RpcResponse::ForwardClientRequest(resp)));
                     }
                 });
-                self.handle_client_request(req, tx);
+                self.handle_client_request(req, tx, heartbeat);
             }
         }
 
@@ -694,10 +695,15 @@ where
         &mut self,
         req: ClientRequest<T>,
         resp_tx: oneshot::Sender<Result<ClientResponse<T>, ClientError>>,
+        heartbeat: &mut Sleep,
     ) {
         match req {
             ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
-            ClientRequest::Set(ref key, val) => self.handle_set_request(key, val, resp_tx),
+            ClientRequest::Set(ref key, val) => {
+                self.handle_set_request(key, val, resp_tx);
+                // Reset the heartbeat since we presumably contacted all peers
+                *heartbeat = self.heartbeat_timeout();
+            }
             ClientRequest::Debug => self.handle_debug(resp_tx),
         }
     }
@@ -726,6 +732,10 @@ where
         self.inner.storage.append_log(entry);
 
         self.state.in_flight.insert(idx, resp_tx);
+
+        for &p in &self.inner.peers {
+            self.append_entries(p)
+        }
     }
 }
 
