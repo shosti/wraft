@@ -1,7 +1,6 @@
 use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
 use std::cmp::min;
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 
 #[derive(Debug)]
 pub struct Storage {
@@ -108,7 +107,7 @@ impl Storage {
         self.set_last_log_index(new_index);
     }
 
-    pub fn sublog(&self, indices: RangeInclusive<LogIndex>) -> Vec<LogEntry> {
+    pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry> {
         indices
             .map(|i| self.get_log(i))
             .filter(|e| e.is_some())

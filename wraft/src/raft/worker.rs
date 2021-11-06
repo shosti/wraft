@@ -574,7 +574,7 @@ impl RaftWorker<Leader> {
         let entries = self
             .inner
             .storage
-            .sublog(next_index..=(next_index + MAX_BATCH_SIZE));
+            .sublog(next_index..(next_index + MAX_BATCH_SIZE));
         let last_entry = entries
             .last()
             .map_or(self.inner.storage.last_log_index(), |e| e.idx);
