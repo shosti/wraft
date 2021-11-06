@@ -4,6 +4,7 @@ use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::broadcast::{channel, Sender};
@@ -124,6 +125,7 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
             ch.ensure_session(&session_id);
             let mut rx = ch.get_messages(&session_id).unwrap().subscribe();
             ch.joined(&node_id, &session_id)?;
+            let mut ping_interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 select! {
                     Ok(msg) = rx.recv() => {
@@ -151,8 +153,11 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
                                     send.send(tungstenite::Message::Binary(data)).await?;
                                 }
                             }
-                            _ => unreachable!()
+                            _ => unreachable!(),
                         }
+                    }
+                    _ = ping_interval.tick() => {
+                        send.send(tungstenite::Message::Ping("hello".into())).await?;
                     }
                     _ = left_rx.recv() => return Ok(()),
                 }
@@ -171,6 +176,7 @@ async fn process_socket(socket: TcpStream, channels: Channels) -> Result<(), Err
                     Err(err) => println!("Error handling message: {:?}", err),
                 }
             }
+            Ok(tungstenite::Message::Pong(_)) => (),
             Ok(tungstenite::Message::Close(_)) => (),
             Ok(msg) => println!("Unexpected message: {}", msg),
             Err(err) => println!("Error handling receiving message: {:?}", err),
