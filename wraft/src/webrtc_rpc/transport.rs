@@ -17,7 +17,7 @@ use web_sys::{MessageEvent, RtcDataChannel, RtcPeerConnection};
 
 const CHANNEL_SIZE: usize = 1024;
 const MAX_IN_FLIGHT_REQUESTS: usize = 1024;
-const REQUEST_TIMEOUT_MILLIS: u64 = 1000;
+const REQUEST_TIMEOUT_MILLIS: u64 = 100;
 
 type RequestMessage<Req, Resp> = (Req, oneshot::Sender<Result<Resp, Error>>);
 

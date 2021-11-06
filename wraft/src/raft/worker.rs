@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
-const HEARBEAT_INTERVAL_MILLIS: u64 = 50;
+const HEARBEAT_INTERVAL_MILLIS: u64 = 100;
 
 enum RaftWorkerState {
     Follower(RaftWorker<Follower>),
@@ -598,16 +598,9 @@ impl RaftWorker<Leader> {
         res: RpcResult,
     ) -> StateChange {
         match res {
-            Err(transport::Error::Disconnected) => {
-                console_log!("peer {} is disconnected", &peer_id);
-                // No point retrying with a disconnected client (we'll try again
-                // in the next heartbeat)
-                StateChange::Continue
-            }
             Err(err) => {
                 console_log!("error in append entries response for {}: {}", &peer_id, err);
                 console_log!("retrying...");
-                self.append_entries(peer_id);
                 StateChange::Continue
             }
             Ok(RpcResponse::AppendEntries(resp)) => {
