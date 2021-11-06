@@ -15,9 +15,11 @@ use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rpc_server::RpcServer;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
@@ -25,55 +27,55 @@ use wasm_bindgen_futures::spawn_local;
 pub type LogIndex = u64;
 pub type TermIndex = u64;
 pub type NodeId = u64;
-pub type RpcMessage = (
-    RpcRequest,
-    oneshot::Sender<Result<RpcResponse, transport::Error>>,
+pub type RpcMessage<T> = (
+    RpcRequest<T>,
+    oneshot::Sender<Result<RpcResponse<T>, transport::Error>>,
 );
-pub type ClientMessage = (
-    ClientRequest,
-    oneshot::Sender<Result<ClientResponse, ClientError>>,
+pub type ClientMessage<T> = (
+    ClientRequest<T>,
+    oneshot::Sender<Result<ClientResponse<T>, ClientError>>,
 );
 
 #[derive(Debug, Clone)]
-pub struct Raft {
-    client_tx: Sender<ClientMessage>,
+pub struct Raft<T> {
+    client_tx: Sender<ClientMessage<T>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum RpcRequest {
-    AppendEntries(AppendEntriesRequest),
+pub enum RpcRequest<T> {
+    AppendEntries(AppendEntriesRequest<T>),
     RequestVote(RequestVoteRequest),
-    ForwardClientRequest(ClientRequest),
+    ForwardClientRequest(ClientRequest<T>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum RpcResponse {
+pub enum RpcResponse<T> {
     AppendEntries(AppendEntriesResponse),
     RequestVote(RequestVoteResponse),
-    ForwardClientRequest(Result<ClientResponse, ClientError>),
+    ForwardClientRequest(Result<ClientResponse<T>, ClientError>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum ClientRequest {
+pub enum ClientRequest<T> {
     Get(String),
-    Set(String, String),
+    Set(String, T),
     Debug,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum ClientResponse {
+pub enum ClientResponse<T> {
     Ack,
-    Get(Option<String>),
-    Debug(Box<RaftDebugState>),
+    Get(Option<T>),
+    Debug(Box<RaftDebugState<T>>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AppendEntriesRequest {
+pub struct AppendEntriesRequest<T> {
     term: TermIndex,
     leader_id: NodeId,
     prev_log_index: LogIndex,
     prev_log_term: TermIndex,
-    entries: Vec<LogEntry>,
+    entries: Vec<LogEntry<T>>,
     leader_commit: LogIndex,
 }
 
@@ -98,23 +100,26 @@ pub struct AppendEntriesResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LogEntry {
-    pub cmd: LogCmd,
+pub struct LogEntry<T> {
+    pub cmd: LogCmd<T>,
     pub term: TermIndex,
     pub idx: LogIndex,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum LogCmd {
-    Set { key: String, data: String },
+pub enum LogCmd<T> {
+    Set { key: String, data: T },
     Delete { key: String },
 }
 
 const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
 
-impl Raft {
+impl<T> Raft<T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
     pub async fn initiate(
-        hostname: String,
+        hostname: &str,
         session_key: u128,
         cluster_size: usize,
     ) -> Result<Self, Error> {
@@ -157,7 +162,7 @@ impl Raft {
         Ok(Self { client_tx })
     }
 
-    pub async fn get(&self, key: String) -> Result<Option<String>, ClientError> {
+    pub async fn get(&self, key: String) -> Result<Option<T>, ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
         let msg = ClientRequest::Get(key);
         let mut tx = self.client_tx.clone();
@@ -179,7 +184,7 @@ impl Raft {
         }
     }
 
-    pub async fn set(&self, key: String, val: String) -> Result<(), ClientError> {
+    pub async fn set(&self, key: String, val: T) -> Result<(), ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
         let msg = ClientRequest::Set(key, val);
         let mut tx = self.client_tx.clone();
@@ -201,7 +206,7 @@ impl Raft {
         }
     }
 
-    pub async fn debug(&self) -> Result<Box<RaftDebugState>, ClientError> {
+    pub async fn debug(&self) -> Result<Box<RaftDebugState<T>>, ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
         let msg = ClientRequest::Debug;
         let mut tx = self.client_tx.clone();
@@ -223,7 +228,7 @@ impl Raft {
         }
     }
 
-    fn generate_node_id(hostname: String, session_key: u128) -> NodeId {
+    fn generate_node_id(hostname: &str, session_key: u128) -> NodeId {
         let mut h = DefaultHasher::new();
         hostname.hash(&mut h);
         session_key.hash(&mut h);

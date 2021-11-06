@@ -74,7 +74,7 @@ async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
     let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
     let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
 
-    let raft = Raft::initiate(hostname, session_key, cluster_size)
+    let raft = Raft::initiate(&hostname, session_key, cluster_size)
         .await
         .unwrap();
 
@@ -88,7 +88,7 @@ async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
     }
 }
 
-fn setup_controls(raft: Raft) {
+fn setup_controls(raft: Raft<String>) {
     let document = get_document();
     let set_form_elem = document.get_element_by_id("set-form").unwrap();
     let set_form = set_form_elem.dyn_ref::<HtmlFormElement>().unwrap();

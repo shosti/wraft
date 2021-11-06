@@ -1,18 +1,23 @@
 use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
-use std::cmp::min;
-use std::collections::HashMap;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::fmt::Debug;
+use std::{cmp::min, marker::PhantomData};
 
 #[derive(Debug)]
-pub struct Storage {
+pub struct Storage<T> {
     session_key: u128,
     last_log_index: LogIndex,
     current_term: TermIndex,
     voted_for: Option<NodeId>,
     storage: web_sys::Storage,
-    snapshot: HashMap<String, String>,
+    _record_type: PhantomData<T>,
 }
 
-impl Storage {
+impl<T> Storage<T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + 'static,
+{
     pub fn new(session_key: u128) -> Self {
         let window = web_sys::window().expect("no global window");
         let storage = window.local_storage().expect("no local storage").unwrap();
@@ -23,7 +28,7 @@ impl Storage {
             last_log_index: 0,
             current_term: 0,
             voted_for: None,
-            snapshot: HashMap::new(),
+            _record_type: PhantomData,
         };
 
         if let Some(term) = state.get_persistent(&state.current_term_key()) {
@@ -82,7 +87,7 @@ impl Storage {
     }
 
     // This explodes if you use it wrong!
-    pub fn append_log(&mut self, entry: LogEntry) {
+    pub fn append_log(&mut self, entry: LogEntry<T>) {
         let idx = self.increment_last_log_index();
         assert_eq!(idx, entry.idx);
 
@@ -91,14 +96,14 @@ impl Storage {
         self.storage.set_item(&key, &data).unwrap();
     }
 
-    pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {
+    pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry<T>> {
         // log indices start at 1, as per the paper
         if idx == 0 || idx > self.last_log_index() {
             return None;
         }
         let key = self.log_key(idx);
         let data = self.storage.get_item(&key).unwrap().unwrap(); // Christmas!
-        let entry: LogEntry = serde_json::from_str(&data).unwrap();
+        let entry: LogEntry<T> = serde_json::from_str(&data).unwrap();
         Some(entry)
     }
 
@@ -107,7 +112,7 @@ impl Storage {
         self.set_last_log_index(new_index);
     }
 
-    pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry> {
+    pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry<T>> {
         indices
             .map(|i| self.get_log(i))
             .filter(|e| e.is_some())

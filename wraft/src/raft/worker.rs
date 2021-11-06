@@ -14,29 +14,25 @@ use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rand::{thread_rng, Rng};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
 const HEARBEAT_INTERVAL_MILLIS: u64 = 100;
 
-enum RaftWorkerState {
-    Follower(RaftWorker<Follower>),
-    Candidate(RaftWorker<Candidate>),
-    Leader(RaftWorker<Leader>),
+enum RaftWorkerState<T> {
+    Follower(RaftWorker<Follower, T>),
+    Candidate(RaftWorker<Candidate, T>),
+    Leader(RaftWorker<Leader<T>, T>),
 }
 
-struct RaftWorker<S> {
-    inner: RaftWorkerInner,
+struct RaftWorker<S, T> {
+    inner: RaftWorkerInner<T>,
     state: S,
-}
-
-#[derive(Debug)]
-struct InFlightAppend {
-    votes: usize,
-    resp_tx: oneshot::Sender<ClientResult>,
 }
 
 #[derive(Debug)]
@@ -44,50 +40,50 @@ struct Follower {}
 #[derive(Debug)]
 struct Candidate {}
 #[derive(Debug)]
-struct Leader {
+struct Leader<T> {
     next_indices: HashMap<NodeId, LogIndex>,
     match_indices: HashMap<NodeId, LogIndex>,
-    in_flight: HashMap<LogIndex, oneshot::Sender<ClientResult>>,
-    responses_tx: Sender<(NodeId, TermIndex, RpcResult)>,
-    responses_rx: Option<Receiver<(NodeId, TermIndex, RpcResult)>>,
+    in_flight: HashMap<LogIndex, oneshot::Sender<ClientResult<T>>>,
+    responses_tx: Sender<(NodeId, TermIndex, RpcResult<T>)>,
+    responses_rx: Option<Receiver<(NodeId, TermIndex, RpcResult<T>)>>,
 }
 
-type RpcClient = Client<RpcRequest, RpcResponse>;
-type RpcResult = Result<RpcResponse, transport::Error>;
-type ClientResult = Result<ClientResponse, ClientError>;
+type RpcClient<T> = Client<RpcRequest<T>, RpcResponse<T>>;
+type RpcResult<T> = Result<RpcResponse<T>, transport::Error>;
+type ClientResult<T> = Result<ClientResponse<T>, ClientError>;
 
 enum StateChange {
     Continue,
     BecomeFollower,
 }
 
-struct RaftWorkerInner {
+struct RaftWorkerInner<T> {
     leader_id: Option<NodeId>,
     node_id: NodeId,
     session_key: u128,
     cluster_size: usize,
-    client_rx: Receiver<ClientMessage>,
-    rpc_rx: Receiver<RpcMessage>,
-    rpc_server: RpcServer,
+    client_rx: Receiver<ClientMessage<T>>,
+    rpc_rx: Receiver<RpcMessage<T>>,
+    rpc_server: RpcServer<T>,
     peers_rx: Receiver<PeerTransport>,
-    current_state: HashMap<String, String>,
+    current_state: HashMap<String, T>,
 
     // Peers is constant throughout the runtime (regardless of whether they're
     // online or not)
     peers: Vec<NodeId>,
     // Peer clients could connect/disconnect
-    peer_clients: HashMap<NodeId, RpcClient>,
+    peer_clients: HashMap<NodeId, RpcClient<T>>,
 
     // Volatile state
     commit_index: TermIndex,
     last_applied: TermIndex,
 
     // Persistent state
-    storage: Storage,
+    storage: Storage<T>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RaftDebugState {
+pub struct RaftDebugState<T> {
     state: String,
     leader_id: Option<NodeId>,
     node_id: NodeId,
@@ -101,17 +97,33 @@ pub struct RaftDebugState {
 
     commit_index: LogIndex,
     last_applied: LogIndex,
-    current_state: HashMap<String, String>,
+    current_state: HashMap<String, T>,
 }
 
-pub fn run(
+impl<T> RaftWorkerState<T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
+    async fn next(self) -> Self {
+        match self {
+            RaftWorkerState::Follower(worker) => worker.next().await,
+            RaftWorkerState::Candidate(worker) => worker.next().await,
+            RaftWorkerState::Leader(worker) => worker.next().await,
+        }
+    }
+}
+
+pub fn run<T>(
     node_id: NodeId,
     session_key: u128,
-    rpc_rx: Receiver<RpcMessage>,
+    rpc_rx: Receiver<RpcMessage<T>>,
     peers_rx: Receiver<PeerTransport>,
-    peer_clients: HashMap<NodeId, RpcClient>,
-    rpc_server: RpcServer,
-) -> Sender<ClientMessage> {
+    peer_clients: HashMap<NodeId, RpcClient<T>>,
+    rpc_server: RpcServer<T>,
+) -> Sender<ClientMessage<T>>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
     let (client_tx, client_rx) = channel(100);
 
     let cluster_size = peer_clients.len() + 1;
@@ -144,19 +156,10 @@ pub fn run(
     client_tx
 }
 
-impl RaftWorkerState {
-    async fn next(self) -> Self {
-        match self {
-            RaftWorkerState::Follower(worker) => worker.next().await,
-            RaftWorkerState::Candidate(worker) => worker.next().await,
-            RaftWorkerState::Leader(worker) => worker.next().await,
-        }
-    }
-}
-
-impl<S> RaftWorker<S>
+impl<S, T> RaftWorker<S, T>
 where
     S: std::fmt::Debug,
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
 {
     fn election_timeout(&self) -> Sleep {
         let delay = thread_rng().gen_range(500..1000);
@@ -188,7 +191,7 @@ where
         }
     }
 
-    fn handle_append_entries(&mut self, req: AppendEntriesRequest) -> AppendEntriesResponse {
+    fn handle_append_entries(&mut self, req: AppendEntriesRequest<T>) -> AppendEntriesResponse {
         let current_term = self.inner.storage.current_term();
         if req.term < current_term {
             return AppendEntriesResponse {
@@ -225,7 +228,7 @@ where
         }
     }
 
-    fn handle_debug(&self, tx: oneshot::Sender<ClientResult>) {
+    fn handle_debug(&self, tx: oneshot::Sender<ClientResult<T>>) {
         let _ = tx.send(Ok(ClientResponse::Debug(Box::new(self.into()))));
     }
 
@@ -260,15 +263,18 @@ where
     }
 }
 
-impl RaftWorker<Follower> {
-    pub fn new(inner: RaftWorkerInner) -> Self {
+impl<T> RaftWorker<Follower, T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
+    pub fn new(inner: RaftWorkerInner<T>) -> Self {
         Self {
             inner,
             state: Follower {},
         }
     }
 
-    async fn next(mut self) -> RaftWorkerState {
+    async fn next(mut self) -> RaftWorkerState<T> {
         console_log!("BEING A FOLLOWER");
         let mut timeout = self.election_timeout();
 
@@ -296,8 +302,8 @@ impl RaftWorker<Follower> {
 
     fn handle_rpc(
         &mut self,
-        req: RpcRequest,
-        resp_tx: oneshot::Sender<RpcResult>,
+        req: RpcRequest<T>,
+        resp_tx: oneshot::Sender<RpcResult<T>>,
         timeout: &mut Sleep,
     ) {
         match req {
@@ -329,7 +335,11 @@ impl RaftWorker<Follower> {
         }
     }
 
-    fn forward_client_request(&self, req: ClientRequest, resp_tx: oneshot::Sender<ClientResult>) {
+    fn forward_client_request(
+        &self,
+        req: ClientRequest<T>,
+        resp_tx: oneshot::Sender<ClientResult<T>>,
+    ) {
         match self.inner.leader_id {
             Some(ref leader_id) => {
                 if let Some(mut client) = self.inner.peer_clients.get(leader_id).cloned() {
@@ -356,8 +366,11 @@ impl RaftWorker<Follower> {
     }
 }
 
-impl RaftWorker<Candidate> {
-    async fn next(mut self) -> RaftWorkerState {
+impl<T> RaftWorker<Candidate, T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
+    async fn next(mut self) -> RaftWorkerState<T> {
         console_log!("BEING A CANDIDATE");
         self.inner.storage.increment_term();
         self.vote_for_self();
@@ -395,7 +408,11 @@ impl RaftWorker<Candidate> {
         self.inner.storage.set_voted_for(Some(self.inner.node_id));
     }
 
-    fn handle_rpc(&mut self, req: RpcRequest, resp_tx: oneshot::Sender<RpcResult>) -> StateChange {
+    fn handle_rpc(
+        &mut self,
+        req: RpcRequest<T>,
+        resp_tx: oneshot::Sender<RpcResult<T>>,
+    ) -> StateChange {
         match req {
             RpcRequest::RequestVote(req) => {
                 let new_term = self.inner.storage.update_term(req.term);
@@ -473,8 +490,11 @@ impl RaftWorker<Candidate> {
     }
 }
 
-impl RaftWorker<Leader> {
-    async fn next(mut self) -> RaftWorkerState {
+impl<T> RaftWorker<Leader<T>, T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
+    async fn next(mut self) -> RaftWorkerState<T> {
         console_log!("BEING A LEADER");
 
         let mut resps_rx = self.state.responses_rx.take().unwrap();
@@ -580,7 +600,7 @@ impl RaftWorker<Leader> {
         &mut self,
         peer_id: NodeId,
         idx: TermIndex,
-        res: RpcResult,
+        res: RpcResult<T>,
     ) -> StateChange {
         match res {
             Err(err) => {
@@ -621,8 +641,8 @@ impl RaftWorker<Leader> {
 
     fn handle_rpc(
         &mut self,
-        req: RpcRequest,
-        resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
+        req: RpcRequest<T>,
+        resp_tx: oneshot::Sender<Result<RpcResponse<T>, transport::Error>>,
     ) -> StateChange {
         let term = self.inner.storage.current_term();
         match req {
@@ -672,12 +692,12 @@ impl RaftWorker<Leader> {
 
     fn handle_client_request(
         &mut self,
-        req: ClientRequest,
-        resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
+        req: ClientRequest<T>,
+        resp_tx: oneshot::Sender<Result<ClientResponse<T>, ClientError>>,
     ) {
         match req {
             ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
-            ClientRequest::Set(ref key, ref val) => self.handle_set_request(key, val, resp_tx),
+            ClientRequest::Set(ref key, val) => self.handle_set_request(key, val, resp_tx),
             ClientRequest::Debug => self.handle_debug(resp_tx),
         }
     }
@@ -685,17 +705,17 @@ impl RaftWorker<Leader> {
     fn handle_get_request(
         &self,
         key: &str,
-        client_resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
+        client_resp_tx: oneshot::Sender<Result<ClientResponse<T>, ClientError>>,
     ) {
         let val = self.inner.current_state.get(key).cloned();
         let resp = ClientResponse::Get(val);
         let _ = client_resp_tx.send(Ok(resp));
     }
 
-    fn handle_set_request(&mut self, key: &str, val: &str, resp_tx: oneshot::Sender<ClientResult>) {
+    fn handle_set_request(&mut self, key: &str, val: T, resp_tx: oneshot::Sender<ClientResult<T>>) {
         let cmd = LogCmd::Set {
             key: key.to_string(),
-            data: val.to_string(),
+            data: val,
         };
         let idx = self.inner.storage.last_log_index() + 1;
         let entry = LogEntry {
@@ -710,8 +730,8 @@ impl RaftWorker<Leader> {
 }
 
 // State machine transitions
-impl From<RaftWorker<Candidate>> for RaftWorker<Follower> {
-    fn from(from: RaftWorker<Candidate>) -> Self {
+impl<T> From<RaftWorker<Candidate, T>> for RaftWorker<Follower, T> {
+    fn from(from: RaftWorker<Candidate, T>) -> Self {
         Self {
             inner: from.inner,
             state: Follower {},
@@ -719,8 +739,8 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Follower> {
     }
 }
 
-impl From<RaftWorker<Leader>> for RaftWorker<Follower> {
-    fn from(from: RaftWorker<Leader>) -> Self {
+impl<T> From<RaftWorker<Leader<T>, T>> for RaftWorker<Follower, T> {
+    fn from(from: RaftWorker<Leader<T>, T>) -> Self {
         Self {
             inner: from.inner,
             state: Follower {},
@@ -728,8 +748,8 @@ impl From<RaftWorker<Leader>> for RaftWorker<Follower> {
     }
 }
 
-impl From<RaftWorker<Follower>> for RaftWorker<Candidate> {
-    fn from(from: RaftWorker<Follower>) -> Self {
+impl<T> From<RaftWorker<Follower, T>> for RaftWorker<Candidate, T> {
+    fn from(from: RaftWorker<Follower, T>) -> Self {
         let mut next = Self {
             inner: from.inner,
             state: Candidate {},
@@ -739,8 +759,11 @@ impl From<RaftWorker<Follower>> for RaftWorker<Candidate> {
     }
 }
 
-impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
-    fn from(from: RaftWorker<Candidate>) -> Self {
+impl<T> From<RaftWorker<Candidate, T>> for RaftWorker<Leader<T>, T>
+where
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+{
+    fn from(from: RaftWorker<Candidate, T>) -> Self {
         let next_indices = from
             .inner
             .peers
@@ -764,11 +787,12 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
     }
 }
 
-impl<S> From<&RaftWorker<S>> for RaftDebugState
+impl<S, T> From<&RaftWorker<S, T>> for RaftDebugState<T>
 where
     S: std::fmt::Debug,
+    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
 {
-    fn from(from: &RaftWorker<S>) -> Self {
+    fn from(from: &RaftWorker<S, T>) -> Self {
         Self {
             state: format!("{:?}", from.state),
             leader_id: from.inner.leader_id,
