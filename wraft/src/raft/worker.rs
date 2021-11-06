@@ -160,7 +160,7 @@ where
     S: std::fmt::Debug,
 {
     fn election_timeout(&self) -> Sleep {
-        let delay = thread_rng().gen_range(150..300);
+        let delay = thread_rng().gen_range(500..1000);
         sleep(Duration::from_millis(delay))
     }
 
