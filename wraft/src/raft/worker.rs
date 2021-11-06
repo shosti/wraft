@@ -114,7 +114,7 @@ pub fn run(
     let (client_tx, client_rx) = channel(100);
     let (debug_tx, debug_rx) = channel(100);
 
-    let cluster_size = peer_clients.len();
+    let cluster_size = peer_clients.len() + 1;
     let persistent = PersistentState::new(&session_key);
     let peers = peer_clients.keys().cloned().collect();
     let state = RaftState {
@@ -540,7 +540,9 @@ impl RaftWorker<Leader> {
                 .iter()
                 .filter(|(_, &idx)| idx >= n)
                 .count();
-            if agree < self.quorum() {
+            // We implicitly agree, so we need (quorum - 1) peers to
+            // agree in order to commit
+            if agree < self.quorum() - 1 {
                 break;
             }
             if self.state.persistent.get_log(n).unwrap().term
