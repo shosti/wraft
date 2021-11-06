@@ -1,5 +1,5 @@
 use crate::console_log;
-use crate::raft::persistence::PersistentState;
+use crate::raft::storage::Storage;
 use crate::raft::rpc_server::RpcServer;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
@@ -28,8 +28,8 @@ enum RaftWorkerState {
 }
 
 struct RaftWorker<S> {
-    state: RaftState,
-    status: S,
+    inner: RaftWorkerInner,
+    state: S,
 }
 
 #[derive(Debug)]
@@ -60,7 +60,7 @@ enum StateChange {
     BecomeFollower,
 }
 
-struct RaftState {
+struct RaftWorkerInner {
     leader_id: Option<NodeId>,
     node_id: NodeId,
     session_key: String,
@@ -83,12 +83,12 @@ struct RaftState {
     last_applied: TermIndex,
 
     // Persistent state
-    persistent: PersistentState,
+    storage: Storage,
 }
 
 #[derive(Debug)]
 pub struct RaftDebugState {
-    status: String,
+    state: String,
     leader_id: Option<NodeId>,
     node_id: NodeId,
     session_key: String,
@@ -116,11 +116,11 @@ pub fn run(
     let (debug_tx, debug_rx) = channel(100);
 
     let cluster_size = peer_clients.len() + 1;
-    let persistent = PersistentState::new(&session_key);
+    let storage = Storage::new(&session_key);
     let peers = peer_clients.keys().cloned().collect();
-    let state = RaftState {
+    let inner = RaftWorkerInner {
         leader_id: None,
-        persistent,
+        storage,
         node_id,
         session_key,
         cluster_size,
@@ -137,7 +137,7 @@ pub fn run(
     };
 
     spawn_local(async move {
-        let mut worker = RaftWorkerState::Follower(RaftWorker::new(state));
+        let mut worker = RaftWorkerState::Follower(RaftWorker::new(inner));
         loop {
             worker = worker.next().await;
         }
@@ -166,17 +166,17 @@ where
     }
 
     fn quorum(&self) -> usize {
-        (self.state.cluster_size / 2) + 1
+        (self.inner.cluster_size / 2) + 1
     }
 
     fn handle_request_vote(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
-        let voted_for = self.state.persistent.voted_for();
-        let current_term = self.state.persistent.current_term();
+        let voted_for = self.inner.storage.voted_for();
+        let current_term = self.inner.storage.current_term();
         if req.term >= current_term
             && (voted_for.is_none() || *voted_for.as_ref().unwrap() == req.candidate)
-            && req.last_log_index >= self.state.commit_index
+            && req.last_log_index >= self.inner.commit_index
         {
-            self.state.persistent.set_voted_for(Some(&req.candidate));
+            self.inner.storage.set_voted_for(Some(&req.candidate));
 
             RequestVoteResponse {
                 term: req.last_log_term,
@@ -191,14 +191,14 @@ where
     }
 
     fn handle_append_entries(&mut self, req: AppendEntriesRequest) -> AppendEntriesResponse {
-        let current_term = self.state.persistent.current_term();
+        let current_term = self.inner.storage.current_term();
         if req.term < current_term {
             return AppendEntriesResponse {
                 term: current_term,
                 success: false,
             };
         }
-        let entry = self.state.persistent.get_log(req.prev_log_index);
+        let entry = self.inner.storage.get_log(req.prev_log_index);
         if req.prev_log_index != 0 && (entry.is_none() || entry.unwrap().term != req.prev_log_term)
         {
             return AppendEntriesResponse {
@@ -207,18 +207,18 @@ where
             };
         }
         for e in &req.entries {
-            if let Some(existing) = self.state.persistent.get_log(e.idx) {
+            if let Some(existing) = self.inner.storage.get_log(e.idx) {
                 if existing.term != e.term {
-                    self.state.persistent.truncate_from(e.idx);
+                    self.inner.storage.truncate_from(e.idx);
                 }
             }
         }
         for e in req.entries {
-            self.state.persistent.append_log(e);
+            self.inner.storage.append_log(e);
         }
 
-        if req.leader_commit > self.state.commit_index {
-            self.state.commit_index = req.leader_commit
+        if req.leader_commit > self.inner.commit_index {
+            self.inner.commit_index = req.leader_commit
         }
 
         AppendEntriesResponse {
@@ -229,19 +229,19 @@ where
 
     fn apply_log(&mut self) {
         for entry in self
-            .state
-            .persistent
-            .sublog((self.state.last_applied + 1)..=self.state.commit_index)
+            .inner
+            .storage
+            .sublog((self.inner.last_applied + 1)..=self.inner.commit_index)
         {
             match entry.cmd {
                 LogCmd::Set { key, data } => {
-                    self.state.current_state.insert(key, data);
+                    self.inner.current_state.insert(key, data);
                 }
                 LogCmd::Delete { ref key } => {
-                    self.state.current_state.remove(key);
+                    self.inner.current_state.remove(key);
                 }
             }
-            self.state.last_applied = entry.idx;
+            self.inner.last_applied = entry.idx;
         }
     }
 
@@ -250,16 +250,16 @@ where
         let peer_id = client.node_id();
         console_log!("Got new peer: {}", peer_id);
 
-        let s = self.state.rpc_server.clone();
+        let s = self.inner.rpc_server.clone();
         spawn_local(async move {
             server.serve(s).await;
         });
-        self.state.peer_clients.insert(client.node_id(), client);
+        self.inner.peer_clients.insert(client.node_id(), client);
     }
 
     fn send_debug(&self) {
         let debug: RaftDebugState = self.into();
-        let mut tx = self.state.debug_tx.clone();
+        let mut tx = self.inner.debug_tx.clone();
         spawn_local(async move {
             let _ = tx.send(debug).await;
         });
@@ -267,10 +267,10 @@ where
 }
 
 impl RaftWorker<Follower> {
-    pub fn new(state: RaftState) -> Self {
+    pub fn new(inner: RaftWorkerInner) -> Self {
         Self {
-            state,
-            status: Follower {},
+            inner,
+            state: Follower {},
         }
     }
 
@@ -282,15 +282,15 @@ impl RaftWorker<Follower> {
         loop {
             self.apply_log();
             select! {
-                res = self.state.rpc_rx.next() => {
+                res = self.inner.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
                     self.handle_rpc(req, resp_tx, &mut timeout);
                 }
-                res = self.state.client_rx.next() => {
+                res = self.inner.client_rx.next() => {
                     let (req, resp_tx) = res.expect("Client channel closed");
                     self.forward_client_request(req, resp_tx);
                 }
-                res = self.state.peers_rx.next() => {
+                res = self.inner.peers_rx.next() => {
                     self.handle_new_peer(res.expect("peer channel closed"));
                 }
                 _ = timeout => {
@@ -312,15 +312,15 @@ impl RaftWorker<Follower> {
     ) {
         match req {
             RpcRequest::RequestVote(req) => {
-                self.state.persistent.update_term(req.term);
+                self.inner.storage.update_term(req.term);
                 let resp = self.handle_request_vote(req);
                 resp_tx
                     .send(Ok(RpcResponse::RequestVote(resp)))
                     .expect("RPC response channel closed");
             }
             RpcRequest::AppendEntries(req) => {
-                self.state.persistent.update_term(req.term);
-                self.state.leader_id = Some(req.leader_id.clone());
+                self.inner.storage.update_term(req.term);
+                self.inner.leader_id = Some(req.leader_id.clone());
                 let resp = self.handle_append_entries(req);
                 resp_tx
                     .send(Ok(RpcResponse::AppendEntries(resp)))
@@ -340,9 +340,9 @@ impl RaftWorker<Follower> {
     }
 
     fn forward_client_request(&self, req: ClientRequest, resp_tx: oneshot::Sender<ClientResult>) {
-        match self.state.leader_id {
+        match self.inner.leader_id {
             Some(ref leader_id) => {
-                if let Some(mut client) = self.state.peer_clients.get(leader_id).cloned() {
+                if let Some(mut client) = self.inner.peer_clients.get(leader_id).cloned() {
                     spawn_local(async move {
                         match client.call(RpcRequest::ForwardClientRequest(req)).await {
                             Ok(RpcResponse::ForwardClientRequest(resp)) => {
@@ -369,7 +369,7 @@ impl RaftWorker<Follower> {
 impl RaftWorker<Candidate> {
     async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A CANDIDATE");
-        self.state.persistent.increment_term();
+        self.inner.storage.increment_term();
         self.vote_for_self();
         let mut votes = 1; // Voted for self
 
@@ -388,7 +388,7 @@ impl RaftWorker<Candidate> {
                         }
                     }
                 }
-                res = self.state.rpc_rx.next() => {
+                res = self.inner.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
                     if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
                         return RaftWorkerState::Follower(self.into());
@@ -406,15 +406,15 @@ impl RaftWorker<Candidate> {
     }
 
     fn vote_for_self(&mut self) {
-        self.state
-            .persistent
-            .set_voted_for(Some(&self.state.node_id));
+        self.inner
+            .storage
+            .set_voted_for(Some(&self.inner.node_id));
     }
 
     fn handle_rpc(&mut self, req: RpcRequest, resp_tx: oneshot::Sender<RpcResult>) -> StateChange {
         match req {
             RpcRequest::RequestVote(req) => {
-                let new_term = self.state.persistent.update_term(req.term);
+                let new_term = self.inner.storage.update_term(req.term);
                 let resp = self.handle_request_vote(req);
                 resp_tx
                     .send(Ok(RpcResponse::RequestVote(resp)))
@@ -428,7 +428,7 @@ impl RaftWorker<Candidate> {
                 }
             }
             RpcRequest::AppendEntries(req) => {
-                self.state.persistent.update_term(req.term);
+                self.inner.storage.update_term(req.term);
                 let resp = self.handle_append_entries(req);
                 resp_tx
                     .send(Ok(RpcResponse::AppendEntries(resp)))
@@ -449,15 +449,15 @@ impl RaftWorker<Candidate> {
     }
 
     fn request_votes(&self) -> Receiver<()> {
-        let (votes_tx, votes_rx) = channel(self.state.cluster_size);
+        let (votes_tx, votes_rx) = channel(self.inner.cluster_size);
         let req = RpcRequest::RequestVote(RequestVoteRequest {
-            term: self.state.persistent.current_term(),
-            candidate: self.state.node_id.to_string(),
-            last_log_index: self.state.persistent.last_log_index(),
-            last_log_term: self.state.persistent.last_log_term(),
+            term: self.inner.storage.current_term(),
+            candidate: self.inner.node_id.to_string(),
+            last_log_index: self.inner.storage.last_log_index(),
+            last_log_term: self.inner.storage.last_log_term(),
         });
         for client in self
-            .state
+            .inner
             .peer_clients
             .values()
             .filter(|c| c.is_connected())
@@ -493,7 +493,7 @@ impl RaftWorker<Leader> {
     async fn next(mut self) -> RaftWorkerState {
         console_log!("BEING A LEADER");
 
-        let mut resps_rx = self.status.responses_rx.take().unwrap();
+        let mut resps_rx = self.state.responses_rx.take().unwrap();
         let mut debug_interval = interval(Duration::from_secs(1));
 
         // Initial heartbeat happens immediately
@@ -508,18 +508,18 @@ impl RaftWorker<Leader> {
                         return RaftWorkerState::Follower(self.into());
                     }
                 }
-                res = self.state.rpc_rx.next() => {
+                res = self.inner.rpc_rx.next() => {
                     let (req, resp_tx) = res.expect("RPC channel closed");
                     if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
                         return RaftWorkerState::Follower(self.into());
                     }
                 }
-                res = self.state.client_rx.next() => {
+                res = self.inner.client_rx.next() => {
                     let (req, resp_tx) = res.expect("client channel closed");
                     self.handle_client_request(req, resp_tx);
                 }
                 _ = heartbeat => {
-                    for peer in &self.state.peers {
+                    for peer in &self.inner.peers {
                         self.append_entries(peer.to_string());
                     }
                     heartbeat = self.heartbeat_timeout();
@@ -532,10 +532,10 @@ impl RaftWorker<Leader> {
     }
 
     fn advance_commit_index(&mut self) {
-        let next_commit_index = self.state.commit_index + 1;
-        for n in next_commit_index..=self.state.persistent.last_log_index() {
+        let next_commit_index = self.inner.commit_index + 1;
+        for n in next_commit_index..=self.inner.storage.last_log_index() {
             let agree = self
-                .status
+                .state
                 .match_indices
                 .iter()
                 .filter(|(_, &idx)| idx >= n)
@@ -545,46 +545,46 @@ impl RaftWorker<Leader> {
             if agree < self.quorum() - 1 {
                 break;
             }
-            if self.state.persistent.get_log(n).unwrap().term
-                != self.state.persistent.current_term()
+            if self.inner.storage.get_log(n).unwrap().term
+                != self.inner.storage.current_term()
             {
                 break;
             }
-            self.state.commit_index = n;
+            self.inner.commit_index = n;
         }
 
-        for idx in next_commit_index..=self.state.commit_index {
-            if let Some(tx) = self.status.in_flight.remove(&idx) {
+        for idx in next_commit_index..=self.inner.commit_index {
+            if let Some(tx) = self.state.in_flight.remove(&idx) {
                 let _ = tx.send(Ok(ClientResponse::Ack));
             }
         }
     }
 
     fn append_entries(&self, peer_id: NodeId) {
-        let mut client = self.state.peer_clients.get(&peer_id).unwrap().clone();
+        let mut client = self.inner.peer_clients.get(&peer_id).unwrap().clone();
         if !client.is_connected() {
             return;
         }
 
-        let next_index = *self.status.next_indices.get(&peer_id).unwrap();
+        let next_index = *self.state.next_indices.get(&peer_id).unwrap();
         let prev_log_index = next_index - 1;
         let prev_log_term = if prev_log_index > 0 {
-            self.state.persistent.get_log(prev_log_index).unwrap().term
+            self.inner.storage.get_log(prev_log_index).unwrap().term
         } else {
             0
         };
-        let last_entry = min(self.state.persistent.last_log_index(), next_index);
-        let entries = self.state.persistent.sublog(next_index..=last_entry);
+        let last_entry = min(self.inner.storage.last_log_index(), next_index);
+        let entries = self.inner.storage.sublog(next_index..=last_entry);
         let req = RpcRequest::AppendEntries(AppendEntriesRequest {
-            leader_id: self.state.node_id.to_string(),
-            term: self.state.persistent.current_term(),
+            leader_id: self.inner.node_id.to_string(),
+            term: self.inner.storage.current_term(),
             prev_log_index,
             prev_log_term,
             entries,
-            leader_commit: self.state.commit_index,
+            leader_commit: self.inner.commit_index,
         });
 
-        let mut tx = self.status.responses_tx.clone();
+        let mut tx = self.state.responses_tx.clone();
         spawn_local(async move {
             let resp = client.call(req).await;
             let _ = tx.send((peer_id, last_entry, resp)).await;
@@ -604,20 +604,20 @@ impl RaftWorker<Leader> {
                 StateChange::Continue
             }
             Ok(RpcResponse::AppendEntries(resp)) => {
-                if self.state.persistent.update_term(resp.term) {
+                if self.inner.storage.update_term(resp.term) {
                     // Relinquish leadership since there's a higher term out
                     // there
                     return StateChange::BecomeFollower;
                 }
-                if resp.term < self.state.persistent.current_term() {
+                if resp.term < self.inner.storage.current_term() {
                     console_log!("received response from old term: {:?}", resp);
                     return StateChange::Continue;
                 }
 
-                let next = self.status.next_indices.get_mut(&peer_id).unwrap();
+                let next = self.state.next_indices.get_mut(&peer_id).unwrap();
                 if resp.success {
                     *next = max(*next, idx + 1);
-                    let m = self.status.match_indices.get_mut(&peer_id).unwrap();
+                    let m = self.state.match_indices.get_mut(&peer_id).unwrap();
                     *m = max(*m, idx);
                 } else {
                     // Try again with an earlier log
@@ -639,10 +639,10 @@ impl RaftWorker<Leader> {
         req: RpcRequest,
         resp_tx: oneshot::Sender<Result<RpcResponse, transport::Error>>,
     ) -> StateChange {
-        let term = self.state.persistent.current_term();
+        let term = self.inner.storage.current_term();
         match req {
             RpcRequest::AppendEntries(req) => {
-                if self.state.persistent.update_term(req.term) {
+                if self.inner.storage.update_term(req.term) {
                     let resp = self.handle_append_entries(req);
                     resp_tx
                         .send(Ok(RpcResponse::AppendEntries(resp)))
@@ -657,7 +657,7 @@ impl RaftWorker<Leader> {
                 }
             }
             RpcRequest::RequestVote(req) => {
-                if self.state.persistent.update_term(req.term) {
+                if self.inner.storage.update_term(req.term) {
                     let resp = self.handle_request_vote(req);
                     resp_tx
                         .send(Ok(RpcResponse::RequestVote(resp)))
@@ -701,7 +701,7 @@ impl RaftWorker<Leader> {
         key: &str,
         client_resp_tx: oneshot::Sender<Result<ClientResponse, ClientError>>,
     ) {
-        let val = self.state.current_state.get(key).cloned();
+        let val = self.inner.current_state.get(key).cloned();
         let resp = ClientResponse::Get(val);
         let _ = client_resp_tx.send(Ok(resp));
     }
@@ -711,15 +711,15 @@ impl RaftWorker<Leader> {
             key: key.to_string(),
             data: val.to_string(),
         };
-        let idx = self.state.persistent.last_log_index() + 1;
+        let idx = self.inner.storage.last_log_index() + 1;
         let entry = LogEntry {
             cmd,
             idx,
-            term: self.state.persistent.current_term(),
+            term: self.inner.storage.current_term(),
         };
-        self.state.persistent.append_log(entry);
+        self.inner.storage.append_log(entry);
 
-        self.status.in_flight.insert(idx, resp_tx);
+        self.state.in_flight.insert(idx, resp_tx);
     }
 }
 
@@ -727,8 +727,8 @@ impl RaftWorker<Leader> {
 impl From<RaftWorker<Candidate>> for RaftWorker<Follower> {
     fn from(from: RaftWorker<Candidate>) -> Self {
         Self {
-            state: from.state,
-            status: Follower {},
+            inner: from.inner,
+            state: Follower {},
         }
     }
 }
@@ -736,8 +736,8 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Follower> {
 impl From<RaftWorker<Leader>> for RaftWorker<Follower> {
     fn from(from: RaftWorker<Leader>) -> Self {
         Self {
-            state: from.state,
-            status: Follower {},
+            inner: from.inner,
+            state: Follower {},
         }
     }
 }
@@ -745,10 +745,10 @@ impl From<RaftWorker<Leader>> for RaftWorker<Follower> {
 impl From<RaftWorker<Follower>> for RaftWorker<Candidate> {
     fn from(from: RaftWorker<Follower>) -> Self {
         let mut next = Self {
-            state: from.state,
-            status: Candidate {},
+            inner: from.inner,
+            state: Candidate {},
         };
-        next.state.leader_id = None;
+        next.inner.leader_id = None;
         next
     }
 }
@@ -756,21 +756,21 @@ impl From<RaftWorker<Follower>> for RaftWorker<Candidate> {
 impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
     fn from(from: RaftWorker<Candidate>) -> Self {
         let next_indices = from
-            .state
+            .inner
             .peers
             .iter()
-            .map(|p| (p.to_string(), from.state.persistent.last_log_index() + 1))
+            .map(|p| (p.to_string(), from.inner.storage.last_log_index() + 1))
             .collect();
         let match_indices = from
-            .state
+            .inner
             .peers
             .iter()
             .map(|p| (p.to_string(), 0))
             .collect();
         let (responses_tx, responses_rx) = channel(100);
         let mut next = Self {
-            state: from.state,
-            status: Leader {
+            inner: from.inner,
+            state: Leader {
                 next_indices,
                 match_indices,
                 responses_tx,
@@ -778,7 +778,7 @@ impl From<RaftWorker<Candidate>> for RaftWorker<Leader> {
                 in_flight: HashMap::new(),
             },
         };
-        next.state.leader_id = Some(next.state.node_id.clone());
+        next.inner.leader_id = Some(next.inner.node_id.clone());
         next
     }
 }
@@ -789,27 +789,27 @@ where
 {
     fn from(from: &RaftWorker<S>) -> Self {
         Self {
-            status: format!("{:?}", from.status),
-            leader_id: from.state.leader_id.clone(),
-            node_id: from.state.node_id.clone(),
-            session_key: from.state.session_key.clone(),
-            cluster_size: from.state.cluster_size,
-            peers: from.state.peers.clone(),
+            state: format!("{:?}", from.state),
+            leader_id: from.inner.leader_id.clone(),
+            node_id: from.inner.node_id.clone(),
+            session_key: from.inner.session_key.clone(),
+            cluster_size: from.inner.cluster_size,
+            peers: from.inner.peers.clone(),
             online_peers: from
-                .state
+                .inner
                 .peer_clients
                 .iter()
                 .filter(|(_, c)| c.is_connected())
                 .map(|(k, _)| k.to_string())
                 .collect(),
-            voted_for: from.state.persistent.voted_for().clone(),
-            current_term: from.state.persistent.current_term(),
-            last_log_index: from.state.persistent.last_log_index(),
+            voted_for: from.inner.storage.voted_for().clone(),
+            current_term: from.inner.storage.current_term(),
+            last_log_index: from.inner.storage.last_log_index(),
 
-            commit_index: from.state.commit_index,
-            last_applied: from.state.last_applied,
+            commit_index: from.inner.commit_index,
+            last_applied: from.inner.last_applied,
             // TODO: This is way too expensive
-            current_state: from.state.current_state.clone(),
+            current_state: from.inner.current_state.clone(),
         }
     }
 }

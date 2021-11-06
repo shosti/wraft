@@ -2,19 +2,18 @@ use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
-use web_sys::Storage;
 
 #[derive(Debug)]
-pub struct PersistentState {
+pub struct Storage {
     session_key: String,
     last_log_index: LogIndex,
     current_term: TermIndex,
     voted_for: Option<NodeId>,
-    storage: Storage,
+    storage: web_sys::Storage,
     snapshot: HashMap<String, String>,
 }
 
-impl PersistentState {
+impl Storage {
     pub fn new(session_key: &str) -> Self {
         let window = web_sys::window().expect("no global window");
         let storage = window.local_storage().expect("no local storage").unwrap();

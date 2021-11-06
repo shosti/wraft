@@ -1,5 +1,5 @@
 pub mod errors;
-mod persistence;
+mod storage;
 mod rpc_server;
 mod worker;
 
