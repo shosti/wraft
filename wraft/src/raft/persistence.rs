@@ -1,4 +1,4 @@
-use crate::raft::{LogCmd, LogEntry, LogIndex, NodeId, TermIndex};
+use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -83,18 +83,14 @@ impl PersistentState {
         self.set_current_term(self.current_term() + 1);
     }
 
-    pub fn append_log(&mut self, cmd: LogCmd) -> LogEntry {
+    // This explodes if you use it wrong!
+    pub fn append_log(&mut self, entry: LogEntry) {
         let idx = self.increment_last_log_index();
-        let entry = LogEntry {
-            cmd,
-            idx,
-            term: self.current_term(),
-        };
-        let key = self.log_key(self.last_log_index());
+        assert_eq!(idx, entry.idx);
+
+        let key = self.log_key(idx);
         let data = serde_json::to_string(&entry).unwrap();
         self.storage.set_item(&key, &data).unwrap();
-
-        entry
     }
 
     pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry> {

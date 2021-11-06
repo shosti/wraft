@@ -3,8 +3,8 @@ use crate::raft::persistence::PersistentState;
 use crate::raft::rpc_server::RpcServer;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
-    ClientResponse, LogCmd, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse, RpcMessage,
-    RpcRequest, RpcResponse, TermIndex,
+    ClientResponse, LogCmd, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
+    RpcMessage, RpcRequest, RpcResponse, TermIndex,
 };
 use crate::util::{interval, sleep, Sleep};
 use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
@@ -214,8 +214,7 @@ where
             }
         }
         for e in req.entries {
-            let new = self.state.persistent.append_log(e.cmd);
-            assert_eq!(new.idx, e.idx);
+            self.state.persistent.append_log(e);
         }
 
         if req.leader_commit > self.state.commit_index {
@@ -719,9 +718,15 @@ impl RaftWorker<Leader> {
             key: key.to_string(),
             data: val.to_string(),
         };
-        let entry = self.state.persistent.append_log(cmd);
+        let idx = self.state.persistent.last_log_index() + 1;
+        let entry = LogEntry {
+            cmd,
+            idx,
+            term: self.state.persistent.current_term(),
+        };
+        self.state.persistent.append_log(entry);
 
-        self.status.in_flight.insert(entry.idx, resp_tx);
+        self.status.in_flight.insert(idx, resp_tx);
     }
 }
 
