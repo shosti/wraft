@@ -97,6 +97,7 @@ pub struct RaftDebugState {
     online_peers: Vec<NodeId>,
     voted_for: Option<NodeId>,
     current_term: TermIndex,
+    last_log_index: LogIndex,
 
     commit_index: LogIndex,
     last_applied: LogIndex,
@@ -805,6 +806,7 @@ where
                 .collect(),
             voted_for: from.state.persistent.voted_for().clone(),
             current_term: from.state.persistent.current_term(),
+            last_log_index: from.state.persistent.last_log_index(),
 
             commit_index: from.state.commit_index,
             last_applied: from.state.last_applied,
