@@ -2,9 +2,11 @@ pub mod raft;
 pub mod util;
 mod webrtc_rpc;
 
+use crate::util::interval;
 use futures::prelude::*;
 use raft::Raft;
 use rand::{thread_rng, Rng};
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -76,10 +78,11 @@ async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
         .await
         .unwrap();
 
-    let mut debug_rx = raft.get_debug_channel().unwrap();
-    setup_controls(raft);
+    let mut debug_interval = interval(Duration::from_secs(1));
+    setup_controls(raft.clone());
 
-    while let Some(s) = debug_rx.next().await {
+    while let Some(()) = debug_interval.next().await {
+        let s = raft.debug().await;
         let content = format!("<pre>{:#?}</pre>", s);
         raft_content.set_inner_html(&content);
     }

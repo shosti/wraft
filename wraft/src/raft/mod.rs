@@ -3,12 +3,13 @@ mod rpc_server;
 mod storage;
 mod worker;
 
+use self::worker::RaftDebugState;
 use crate::console_log;
 use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
 use errors::{ClientError, Error};
-use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::channel::mpsc::{channel, Sender};
 use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
@@ -18,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -37,7 +37,6 @@ pub type ClientMessage = (
 #[derive(Debug, Clone)]
 pub struct Raft {
     client_tx: Sender<ClientMessage>,
-    debug_rx: Arc<Mutex<Option<Receiver<worker::RaftDebugState>>>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -58,12 +57,14 @@ pub enum RpcResponse {
 pub enum ClientRequest {
     Get(String),
     Set(String, String),
+    Debug,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientResponse {
     Ack,
     Get(Option<String>),
+    Debug(Box<RaftDebugState>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -144,7 +145,7 @@ impl Raft {
                 peer.serve(s).await;
             });
         }
-        let (client_tx, debug_rx) = worker::run(
+        let client_tx = worker::run(
             node_id,
             session_key,
             rpc_rx,
@@ -153,15 +154,7 @@ impl Raft {
             rpc_server,
         );
 
-        Ok(Self {
-            client_tx,
-            debug_rx: Arc::new(Mutex::new(Some(debug_rx))),
-        })
-    }
-
-    pub fn get_debug_channel(&self) -> Option<Receiver<worker::RaftDebugState>> {
-        let mut rx = self.debug_rx.lock().unwrap();
-        rx.take()
+        Ok(Self { client_tx })
     }
 
     pub async fn get(&self, key: String) -> Result<Option<String>, ClientError> {
@@ -197,6 +190,28 @@ impl Raft {
             res = resp_rx => {
                 match res {
                     Ok(Ok(ClientResponse::Ack)) => Ok(()),
+                    Ok(Err(err)) => Err(err),
+                    Err(_) => Err(ClientError::Unavailable),
+                    _ => unreachable!(),
+                }
+            }
+            _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
+                Err(ClientError::Timeout)
+            }
+        }
+    }
+
+    pub async fn debug(&self) -> Result<Box<RaftDebugState>, ClientError> {
+        let (resp_tx, mut resp_rx) = oneshot::channel();
+        let msg = ClientRequest::Debug;
+        let mut tx = self.client_tx.clone();
+        tx.send((msg, resp_tx))
+            .await
+            .map_err(|_| ClientError::Unavailable)?;
+        select! {
+            res = resp_rx => {
+                match res {
+                    Ok(Ok(ClientResponse::Debug(debug))) => Ok(debug),
                     Ok(Err(err)) => Err(err),
                     Err(_) => Err(ClientError::Unavailable),
                     _ => unreachable!(),
