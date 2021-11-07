@@ -1,6 +1,7 @@
 pub mod raft;
 pub mod util;
 mod webrtc_rpc;
+pub mod ringbuf;
 
 use crate::util::sleep;
 use futures::prelude::*;

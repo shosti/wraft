@@ -1,4 +1,5 @@
 use crate::console_log;
+use crate::ringbuf::{self, RingBuf};
 use crate::util::sleep;
 use async_trait::async_trait;
 use futures::channel::mpsc::{channel, Receiver, Sender};
@@ -235,11 +236,9 @@ async fn handle_client_requests<Req, Resp>(
     Req: Serialize + 'static,
     Resp: Serialize + 'static,
 {
-    type InFlightRequest<Resp> = (usize, oneshot::Sender<Result<Resp, Error>>);
-    let mut in_flight: Vec<Option<InFlightRequest<Resp>>> =
-        (0..MAX_IN_FLIGHT_REQUESTS).map(|_| None).collect();
-    let mut min_req_idx: usize = 0;
-    let mut next_req_idx: usize = 0;
+    type InFlightRequest<Resp> = oneshot::Sender<Result<Resp, Error>>;
+    let mut in_flight: RingBuf<InFlightRequest<Resp>> =
+        RingBuf::with_capacity(MAX_IN_FLIGHT_REQUESTS);
 
     let (timeout_tx, mut timeout_rx) = channel::<usize>(MAX_IN_FLIGHT_REQUESTS);
 
@@ -250,31 +249,30 @@ async fn handle_client_requests<Req, Resp>(
                     break;
                 }
                 let (req, tx) = res.unwrap();
-                let idx = next_req_idx;
-                if idx - min_req_idx >= MAX_IN_FLIGHT_REQUESTS {
-                    let _ = tx.send(Err(Error::TooManyInFlightRequests));
-                    continue;
+
+                match in_flight.add(tx) {
+                    Ok(idx) => {
+                        let msg: Message<Req, Resp> = Message::Request {
+                            idx,
+                            req,
+                        };
+                        let data = bincode::serialize(&msg).unwrap();
+                        if let Err(err) = dc.send_with_u8_array(&data) {
+                            let tx = in_flight.remove(idx).unwrap();
+                            let _ = tx.send(Err(Error::from(err)));
+                            continue;
+                        }
+                        let mut tx = timeout_tx.clone();
+                        spawn_local(async move {
+                            sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
+                            let _ = tx.send(idx).await;
+                        });
+                    }
+                    Err(ringbuf::Error::Overflow(tx)) => {
+                        let _ = tx.send(Err(Error::TooManyInFlightRequests));
+                    }
                 }
 
-                let msg: Message<Req, Resp> = Message::Request {
-                    idx,
-                    req,
-                };
-
-                let data = bincode::serialize(&msg).unwrap();
-                if let Err(err) = dc.send_with_u8_array(&data) {
-                    let _ = tx.send(Err(Error::from(err)));
-                    continue;
-                }
-
-                next_req_idx += 1;
-                in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some((idx, tx));
-
-                let mut tx = timeout_tx.clone();
-                spawn_local(async move {
-                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
-                    let _ = tx.send(idx).await;
-                });
             }
             res = resp_rx.next() => {
                 if res.is_none() {
@@ -282,25 +280,12 @@ async fn handle_client_requests<Req, Resp>(
                 }
                 let msg = res.unwrap();
                 if let Message::Response { idx, resp } = msg {
-                    let tx_opt = in_flight
-                        .get_mut(idx % MAX_IN_FLIGHT_REQUESTS)
-                        .expect("out of bounds for in-flight requests")
-                        .take();
-                    match tx_opt {
-                        Some((i, tx)) if i == idx => {
+                    match in_flight.remove(idx) {
+                        Some(tx) => {
                             // Best-effort reply (if the caller is gone then one
                             // can assume that the request has been canceled or
                             // something).
                             let _ = tx.send(resp);
-                        }
-                        Some((i, tx)) => {
-                            console_log!(
-                                "got unexpected response for leftover timed-out request (in-flight ID is {}, response ID is {})",
-                                i,
-                                idx,
-                            );
-                            in_flight[idx % MAX_IN_FLIGHT_REQUESTS] = Some((i, tx))
-
                         }
                         None => {
                             console_log!("request {} came in after request canceled", idx)
@@ -313,19 +298,12 @@ async fn handle_client_requests<Req, Resp>(
                     break;
                 }
                 let idx = res.unwrap();
-                let tx_opt = in_flight.get_mut(idx % MAX_IN_FLIGHT_REQUESTS).unwrap().take();
 
-                if let Some((i, tx)) = tx_opt {
-                    assert_eq!(i, idx, "unexpected response sender in timeout");
+                if let Some(tx) = in_flight.remove(idx) {
                     console_log!("request {} timed out", idx);
                     let _ = tx.send(Err(Error::RequestTimeout));
                 }
             }
-        }
-        while min_req_idx < next_req_idx
-            && in_flight[min_req_idx % MAX_IN_FLIGHT_REQUESTS].is_none()
-        {
-            min_req_idx += 1;
         }
     }
 }
