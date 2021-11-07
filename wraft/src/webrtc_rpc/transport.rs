@@ -313,8 +313,7 @@ async fn handle_client_requests<Req, Resp>(
                     break;
                 }
                 let idx = res.unwrap();
-                let tx_opt = in_flight.swap_remove(idx % MAX_IN_FLIGHT_REQUESTS);
-                in_flight.push(None);
+                let tx_opt = in_flight.get_mut(idx % MAX_IN_FLIGHT_REQUESTS).unwrap().take();
 
                 if let Some((i, tx)) = tx_opt {
                     assert_eq!(i, idx, "unexpected response sender in timeout");
