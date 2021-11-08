@@ -9,7 +9,6 @@ pub enum Error {
     Js(String),
     Transport(transport::Error),
     NotEnoughPeers,
-    Persistence(serde_json::Error),
     NotLeader,
     CommandTimeout,
 }
@@ -18,12 +17,6 @@ pub enum Error {
 pub enum ClientError {
     Unavailable,
     Timeout,
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
-        Error::Persistence(err)
-    }
 }
 
 impl From<JsValue> for Error {
