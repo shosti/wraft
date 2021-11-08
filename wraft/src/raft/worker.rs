@@ -16,9 +16,10 @@ use futures::stream::StreamExt;
 use rand::{thread_rng, Rng};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::cmp::max;
-use std::collections::HashMap;
+use std::cmp::{max, min};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -43,14 +44,16 @@ struct Candidate {}
 struct Leader<T> {
     next_indices: HashMap<NodeId, LogIndex>,
     match_indices: HashMap<NodeId, LogIndex>,
-    in_flight: HashMap<LogIndex, oneshot::Sender<ClientResult<T>>>,
-    responses_tx: Sender<(NodeId, LogIndex, RpcResult<T>)>,
-    responses_rx: Option<Receiver<(NodeId, LogIndex, RpcResult<T>)>>,
+    in_flight_client_requests: Box<HashMap<LogIndex, oneshot::Sender<ClientResult<T>>>>,
+    in_flight_peers: HashSet<NodeId>,
+    responses_tx: Sender<InFlightResponse<T>>,
+    responses_rx: Option<Receiver<InFlightResponse<T>>>,
 }
 
 type RpcClient<T> = Client<RpcRequest<T>, RpcResponse<T>>;
 type RpcResult<T> = Result<RpcResponse<T>, transport::Error>;
 type ClientResult<T> = Result<ClientResponse<T>, ClientError>;
+type InFlightResponse<T> = (NodeId, RangeInclusive<LogIndex>, RpcResult<T>);
 
 enum StateChange {
     Continue,
@@ -517,8 +520,8 @@ where
             self.apply_log();
             select! {
                 res = resps_rx.next() => {
-                    let (peer_id, idx, resp) = res.expect("response channel closed");
-                    if let StateChange::BecomeFollower = self.handle_append_entries_response(peer_id, idx, resp) {
+                    let (peer_id, indices, resp) = res.expect("response channel closed");
+                    if let StateChange::BecomeFollower = self.handle_append_entries_response(peer_id, indices, resp) {
                         return RaftWorkerState::Follower(self.into());
                     }
                 }
@@ -533,7 +536,8 @@ where
                     self.handle_client_request(req, resp_tx, &mut heartbeat);
                 }
                 _ = heartbeat => {
-                    for &peer in &self.inner.peers {
+                    let peers = self.inner.peers.clone();
+                    for peer in peers {
                         self.append_entries(peer);
                     }
                     heartbeat = self.heartbeat_timeout();
@@ -563,17 +567,20 @@ where
         }
 
         for idx in next_commit_index..=self.inner.commit_index {
-            if let Some(tx) = self.state.in_flight.remove(&idx) {
+            if let Some(tx) = self.state.in_flight_client_requests.remove(&idx) {
                 let _ = tx.send(Ok(ClientResponse::Ack));
             }
         }
     }
 
-    fn append_entries(&self, peer_id: NodeId) {
-        const MAX_BATCH_SIZE: u64 = 10;
+    fn append_entries(&mut self, peer_id: NodeId) {
+        const MAX_BATCH_SIZE: u64 = 100;
 
         let mut client = self.inner.peer_clients.get(&peer_id).unwrap().clone();
         if !client.is_connected() {
+            return;
+        }
+        if self.state.in_flight_peers.contains(&peer_id) {
             return;
         }
 
@@ -591,6 +598,7 @@ where
         let last_entry = entries
             .last()
             .map_or(self.inner.storage.last_log_index(), |e| e.idx);
+        let first_entry = entries.first().map_or(last_entry, |e| e.idx);
         let req = RpcRequest::AppendEntries(AppendEntriesRequest {
             leader_id: self.inner.node_id,
             term: self.inner.storage.current_term(),
@@ -599,20 +607,22 @@ where
             entries,
             leader_commit: self.inner.commit_index,
         });
+        self.state.in_flight_peers.insert(peer_id);
 
         let mut tx = self.state.responses_tx.clone();
         spawn_local(async move {
             let resp = client.call(req).await;
-            let _ = tx.send((peer_id, last_entry, resp)).await;
+            let _ = tx.send((peer_id, first_entry..=last_entry, resp)).await;
         });
     }
 
     fn handle_append_entries_response(
         &mut self,
         peer_id: NodeId,
-        idx: LogIndex,
+        indices: RangeInclusive<LogIndex>,
         res: RpcResult<T>,
     ) -> StateChange {
+        self.state.in_flight_peers.remove(&peer_id);
         match res {
             Err(err) => {
                 console_log!("error in append entries response for {}: {}", &peer_id, err);
@@ -632,12 +642,12 @@ where
 
                 let next = self.state.next_indices.get_mut(&peer_id).unwrap();
                 if resp.success {
-                    *next = max(*next, idx + 1);
+                    *next = max(*next, indices.end() + 1);
                     let m = self.state.match_indices.get_mut(&peer_id).unwrap();
-                    *m = max(*m, idx);
+                    *m = max(*m, *indices.end());
                 } else {
                     // Try again with an earlier log
-                    *next -= 1;
+                    *next = min(*next, indices.start() - 1);
                     self.append_entries(peer_id);
                 }
                 StateChange::Continue
@@ -754,10 +764,11 @@ where
         };
         self.inner.storage.append_log(&entry);
 
-        self.state.in_flight.insert(idx, resp_tx);
+        self.state.in_flight_client_requests.insert(idx, resp_tx);
 
-        for &p in &self.inner.peers {
-            self.append_entries(p)
+        let peers = self.inner.peers.clone();
+        for peer in peers {
+            self.append_entries(peer)
         }
     }
 }
@@ -812,7 +823,8 @@ where
                 match_indices,
                 responses_tx,
                 responses_rx: Some(responses_rx),
-                in_flight: HashMap::new(),
+                in_flight_client_requests: Box::new(HashMap::new()),
+                in_flight_peers: HashSet::new(),
             },
         };
         next.inner.leader_id = Some(next.inner.node_id);
