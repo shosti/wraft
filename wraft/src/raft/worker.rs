@@ -286,7 +286,10 @@ where
                 }
                 res = self.inner.client_rx.next() => {
                     let (req, resp_tx) = res.expect("Client channel closed");
-                    self.forward_client_request(req, resp_tx);
+                    match req {
+                        ClientRequest::Debug => self.handle_debug(resp_tx),
+                        _ => self.forward_client_request(req, resp_tx),
+                    }
                 }
                 res = self.inner.peers_rx.next() => {
                     self.handle_new_peer(res.expect("peer channel closed"));
@@ -393,6 +396,15 @@ where
                     let (req, resp_tx) = res.expect("RPC channel closed");
                     if let StateChange::BecomeFollower = self.handle_rpc(req, resp_tx) {
                         return RaftWorkerState::Follower(self.into());
+                    }
+                }
+                res = self.inner.client_rx.next() => {
+                    let (req, resp_tx) = res.expect("Client channel closed");
+                    match req {
+                        ClientRequest::Debug => self.handle_debug(resp_tx),
+                        _ => {
+                            let _ = resp_tx.send(Err(ClientError::Unavailable));
+                        }
                     }
                 }
                 _ = timeout => {
