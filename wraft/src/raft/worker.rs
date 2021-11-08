@@ -703,6 +703,7 @@ where
                 // Reset the heartbeat since we presumably contacted all peers
                 *heartbeat = self.heartbeat_timeout();
             }
+            ClientRequest::Delete(ref key) => self.handle_delete_request(key, resp_tx),
             ClientRequest::Debug => self.handle_debug(resp_tx),
         }
     }
@@ -722,6 +723,15 @@ where
             key: key.to_string(),
             data: val,
         };
+        self.handle_log_update(cmd, resp_tx)
+    }
+
+    fn handle_delete_request(&mut self, key: &str, resp_tx: oneshot::Sender<ClientResult<T>>) {
+        let cmd = LogCmd::Delete { key: key.to_string() };
+        self.handle_log_update(cmd, resp_tx)
+    }
+
+    fn handle_log_update(&mut self, cmd: LogCmd<T>, resp_tx: oneshot::Sender<ClientResult<T>>) {
         let idx = self.inner.storage.last_log_index() + 1;
         let entry = LogEntry {
             cmd,

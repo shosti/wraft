@@ -59,6 +59,7 @@ pub enum RpcResponse<T> {
 pub enum ClientRequest<T> {
     Get(String),
     Set(String, T),
+    Delete(String),
     Debug,
 }
 
@@ -163,63 +164,45 @@ where
     }
 
     pub async fn get(&self, key: String) -> Result<Option<T>, ClientError> {
-        let (resp_tx, mut resp_rx) = oneshot::channel();
-        let msg = ClientRequest::Get(key);
-        let mut tx = self.client_tx.clone();
-        tx.send((msg, resp_tx))
-            .await
-            .map_err(|_| ClientError::Unavailable)?;
-        select! {
-            res = resp_rx => {
-                match res {
-                    Ok(Ok(ClientResponse::Get(val))) => Ok(val),
-                    Ok(Err(err)) => Err(err),
-                    Err(_) => Err(ClientError::Unavailable),
-                    _ => unreachable!(),
-                }
-            }
-            _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
-                Err(ClientError::Timeout)
-            }
+        let req = ClientRequest::Get(key);
+        match self.do_client_request(req).await {
+            Ok(ClientResponse::Get(val)) => Ok(val),
+            Err(err) => Err(err),
+            _ => unreachable!(),
         }
     }
 
     pub async fn set(&self, key: String, val: T) -> Result<(), ClientError> {
-        let (resp_tx, mut resp_rx) = oneshot::channel();
-        let msg = ClientRequest::Set(key, val);
-        let mut tx = self.client_tx.clone();
-        tx.send((msg, resp_tx))
-            .await
-            .map_err(|_| ClientError::Unavailable)?;
-        select! {
-            res = resp_rx => {
-                match res {
-                    Ok(Ok(ClientResponse::Ack)) => Ok(()),
-                    Ok(Err(err)) => Err(err),
-                    Err(_) => Err(ClientError::Unavailable),
-                    _ => unreachable!(),
-                }
-            }
-            _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
-                Err(ClientError::Timeout)
-            }
-        }
+        let req = ClientRequest::Set(key, val);
+        self.do_client_request(req).await.map(|_| ())
+    }
+
+    pub async fn delete(&self, key: String) -> Result<(), ClientError> {
+        let req = ClientRequest::Delete(key);
+        self.do_client_request(req).await.map(|_| ())
     }
 
     pub async fn debug(&self) -> Result<Box<RaftDebugState<T>>, ClientError> {
+        let req = ClientRequest::Debug;
+        match self.do_client_request(req).await {
+            Ok(ClientResponse::Debug(debug)) => Ok(debug),
+            Err(err) => Err(err),
+            _ => unreachable!(),
+        }
+    }
+
+    async fn do_client_request(&self, req: ClientRequest<T>) -> Result<ClientResponse<T>, ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
-        let msg = ClientRequest::Debug;
         let mut tx = self.client_tx.clone();
-        tx.send((msg, resp_tx))
+        tx.send((req, resp_tx))
             .await
             .map_err(|_| ClientError::Unavailable)?;
         select! {
             res = resp_rx => {
                 match res {
-                    Ok(Ok(ClientResponse::Debug(debug))) => Ok(debug),
+                    Ok(Ok(resp)) => Ok(resp),
                     Ok(Err(err)) => Err(err),
                     Err(_) => Err(ClientError::Unavailable),
-                    _ => unreachable!(),
                 }
             }
             _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
