@@ -1,7 +1,9 @@
 use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
+use base64::write::EncoderStringWriter;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
+use std::io::Cursor;
 use std::marker::PhantomData;
 
 #[derive(Debug)]
@@ -92,7 +94,9 @@ where
         assert_eq!(idx, entry.idx);
 
         let key = self.log_key(idx);
-        let data = serde_json::to_string(entry).unwrap();
+        let mut buf = EncoderStringWriter::new(base64::STANDARD);
+        bincode::serialize_into(&mut buf, entry).unwrap();
+        let data = buf.into_inner();
         self.storage.set_item(&key, &data).unwrap();
     }
 
@@ -111,8 +115,9 @@ where
             return None;
         }
         let key = self.log_key(idx);
-        let data = self.storage.get_item(&key).unwrap().unwrap(); // Christmas!
-        let entry: LogEntry<T> = serde_json::from_str(&data).unwrap();
+        let mut data = Cursor::new(self.storage.get_item(&key).unwrap().unwrap()); // Christmas!
+        let buf = base64::read::DecoderReader::new(&mut data, base64::STANDARD);
+        let entry: LogEntry<T> = bincode::deserialize_from(buf).unwrap();
         Some(entry)
     }
 
