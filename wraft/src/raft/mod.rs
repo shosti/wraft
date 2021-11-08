@@ -191,7 +191,10 @@ where
         }
     }
 
-    async fn do_client_request(&self, req: ClientRequest<T>) -> Result<ClientResponse<T>, ClientError> {
+    async fn do_client_request(
+        &self,
+        req: ClientRequest<T>,
+    ) -> Result<ClientResponse<T>, ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
         let mut tx = self.client_tx.clone();
         tx.send((req, resp_tx))

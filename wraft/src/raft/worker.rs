@@ -727,7 +727,9 @@ where
     }
 
     fn handle_delete_request(&mut self, key: &str, resp_tx: oneshot::Sender<ClientResult<T>>) {
-        let cmd = LogCmd::Delete { key: key.to_string() };
+        let cmd = LogCmd::Delete {
+            key: key.to_string(),
+        };
         self.handle_log_update(cmd, resp_tx)
     }
 
