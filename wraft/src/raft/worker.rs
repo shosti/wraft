@@ -221,7 +221,10 @@ where
         }
 
         if req.leader_commit > self.inner.commit_index {
-            self.inner.commit_index = req.leader_commit
+            self.inner.commit_index = min(
+                req.leader_commit,
+                req.entries.last().map_or(req.leader_commit, |e| e.idx),
+            );
         }
 
         AppendEntriesResponse {
