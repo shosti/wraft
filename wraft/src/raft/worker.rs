@@ -44,8 +44,8 @@ struct Leader<T> {
     next_indices: HashMap<NodeId, LogIndex>,
     match_indices: HashMap<NodeId, LogIndex>,
     in_flight: HashMap<LogIndex, oneshot::Sender<ClientResult<T>>>,
-    responses_tx: Sender<(NodeId, TermIndex, RpcResult<T>)>,
-    responses_rx: Option<Receiver<(NodeId, TermIndex, RpcResult<T>)>>,
+    responses_tx: Sender<(NodeId, LogIndex, RpcResult<T>)>,
+    responses_rx: Option<Receiver<(NodeId, LogIndex, RpcResult<T>)>>,
 }
 
 type RpcClient<T> = Client<RpcRequest<T>, RpcResponse<T>>;
@@ -75,8 +75,8 @@ struct RaftWorkerInner<T> {
     peer_clients: HashMap<NodeId, RpcClient<T>>,
 
     // Volatile state
-    commit_index: TermIndex,
-    last_applied: TermIndex,
+    commit_index: LogIndex,
+    last_applied: LogIndex,
 
     // Persistent state
     storage: Storage<T>,
@@ -598,7 +598,7 @@ where
     fn handle_append_entries_response(
         &mut self,
         peer_id: NodeId,
-        idx: TermIndex,
+        idx: LogIndex,
         res: RpcResult<T>,
     ) -> StateChange {
         match res {
