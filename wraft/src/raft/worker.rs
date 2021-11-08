@@ -162,7 +162,7 @@ where
     T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
 {
     fn election_timeout(&self) -> Sleep {
-        let delay = thread_rng().gen_range(500..1000);
+        let delay = thread_rng().gen_range(1000..1500);
         sleep(Duration::from_millis(delay))
     }
 
