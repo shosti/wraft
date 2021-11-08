@@ -272,20 +272,22 @@ where
         loop {
             select! {
                 res = req_rx.next() => {
-                    if res.is_none() {
-                        console_log!("request channel closed, stopping request manager");
-                        return;
+                    match res {
+                        Some((req, tx)) => self.handle_request(req, tx),
+                        None => {
+                            console_log!("request channel closed, stopping request manager");
+                            return;
+                        }
                     }
-                    let (req, tx) = res.unwrap();
-                    self.handle_request(req, tx);
                 }
                 res = resp_rx.next() => {
-                    if res.is_none() {
-                        console_log!("response channel closed, stopping request manager");
-                        return;
+                    match res {
+                        Some(msg) => self.handle_response(msg),
+                        None => {
+                            console_log!("response channel closed, stopping request manager");
+                            return;
+                        }
                     }
-                    let msg = res.unwrap();
-                    self.handle_response(msg);
                 }
                 res = timeout_rx.next() => {
                     let idx = res.unwrap();
