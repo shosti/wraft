@@ -10,8 +10,11 @@ use std::marker::PhantomData;
 pub struct Storage<T> {
     session_key: u128,
     last_log_index: LogIndex,
+    last_log_index_key: String,
     current_term: TermIndex,
+    current_term_key: String,
     voted_for: Option<NodeId>,
+    voted_for_key: String,
     storage: web_sys::Storage,
     _record_type: PhantomData<T>,
 }
@@ -30,18 +33,21 @@ where
             last_log_index: 0,
             current_term: 0,
             voted_for: None,
+            current_term_key: format!("current-term-{}", session_key),
+            voted_for_key: format!("voted-for-{}", session_key),
+            last_log_index_key: format!("last-log-index-{}", session_key),
             _record_type: PhantomData,
         };
 
-        if let Some(term) = state.get_persistent(&state.current_term_key()) {
+        if let Some(term) = state.get_persistent(&state.current_term_key) {
             state.current_term = term.parse().unwrap();
         }
 
-        if let Some(vote) = state.get_persistent(&state.voted_for_key()) {
+        if let Some(vote) = state.get_persistent(&state.voted_for_key) {
             state.voted_for = Some(vote.parse().unwrap());
         }
 
-        if let Some(idx) = state.get_persistent(&state.last_log_index_key()) {
+        if let Some(idx) = state.get_persistent(&state.last_log_index_key) {
             state.last_log_index = idx.parse().unwrap();
         }
 
@@ -60,9 +66,8 @@ where
 
     fn set_last_log_index(&mut self, idx: LogIndex) {
         self.last_log_index = idx;
-        let key = self.last_log_index_key();
         let val = idx.to_string();
-        self.set_persistent(&key, &val);
+        self.set_persistent(&self.last_log_index_key, &val);
     }
 
     pub fn last_log_term(&self) -> TermIndex {
@@ -135,9 +140,8 @@ where
 
     fn set_current_term(&mut self, term: TermIndex) {
         self.current_term = term;
-        let key = self.current_term_key();
         let val = term.to_string();
-        self.set_persistent(&key, &val);
+        self.set_persistent(&self.current_term_key, &val);
     }
 
     pub fn voted_for(&self) -> &Option<NodeId> {
@@ -145,15 +149,14 @@ where
     }
 
     pub fn set_voted_for(&mut self, val: Option<NodeId>) {
-        let key = self.voted_for_key();
         match val {
             Some(val) => {
                 self.voted_for = Some(val);
                 let sval = val.to_string();
-                self.set_persistent(&key, &sval);
+                self.set_persistent(&self.voted_for_key, &sval);
             }
             None => {
-                self.storage.remove_item(&key).unwrap();
+                self.storage.remove_item(&self.voted_for_key).unwrap();
                 self.voted_for = None;
             }
         }
@@ -169,17 +172,5 @@ where
 
     fn log_key(&self, idx: LogIndex) -> String {
         format!("log-{}-{}", self.session_key, idx)
-    }
-
-    fn current_term_key(&self) -> String {
-        format!("current-term-{}", self.session_key)
-    }
-
-    fn voted_for_key(&self) -> String {
-        format!("voted-for-{}", self.session_key)
-    }
-
-    fn last_log_index_key(&self) -> String {
-        format!("last-log-index-{}", self.session_key)
     }
 }
