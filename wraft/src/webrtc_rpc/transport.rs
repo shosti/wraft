@@ -8,6 +8,7 @@ use futures::{select, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,6 +60,13 @@ pub struct Client<Req, Resp> {
     node_id: u64,
     connected: Arc<AtomicBool>,
     req_tx: Sender<RequestMessage<Req, Resp>>,
+}
+
+struct RequestManager<Req, Resp> {
+    dc: RtcDataChannel,
+    in_flight: RingBuf<oneshot::Sender<Result<Resp, Error>>>,
+    timeout_tx: Sender<usize>,
+    _request: PhantomData<Req>,
 }
 
 #[async_trait]
@@ -229,81 +237,106 @@ impl<Req, Resp> Drop for Server<Req, Resp> {
 }
 
 async fn handle_client_requests<Req, Resp>(
-    mut req_rx: Receiver<(Req, oneshot::Sender<Result<Resp, Error>>)>,
-    mut resp_rx: Receiver<Message<Req, Resp>>,
+    req_rx: Receiver<(Req, oneshot::Sender<Result<Resp, Error>>)>,
+    resp_rx: Receiver<Message<Req, Resp>>,
     dc: RtcDataChannel,
 ) where
     Req: Serialize + 'static,
     Resp: Serialize + 'static,
 {
-    type InFlightRequest<Resp> = oneshot::Sender<Result<Resp, Error>>;
-    let mut in_flight: RingBuf<InFlightRequest<Resp>> =
-        RingBuf::with_capacity(MAX_IN_FLIGHT_REQUESTS);
+    let (timeout_tx, timeout_rx) = channel::<usize>(MAX_IN_FLIGHT_REQUESTS);
+    let m = RequestManager {
+        in_flight: RingBuf::with_capacity(MAX_IN_FLIGHT_REQUESTS),
+        dc,
+        timeout_tx,
+        _request: PhantomData,
+    };
 
-    let (timeout_tx, mut timeout_rx) = channel::<usize>(MAX_IN_FLIGHT_REQUESTS);
+    m.run(req_rx, resp_rx, timeout_rx).await;
+}
 
-    loop {
-        select! {
-            res = req_rx.next() => {
-                if res.is_none() {
-                    break;
-                }
-                let (req, tx) = res.unwrap();
-
-                match in_flight.add(tx) {
-                    Ok(idx) => {
-                        let msg: Message<Req, Resp> = Message::Request {
-                            idx,
-                            req,
-                        };
-                        let data = bincode::serialize(&msg).unwrap();
-                        if let Err(err) = dc.send_with_u8_array(&data) {
-                            let tx = in_flight.remove(idx).unwrap();
-                            let _ = tx.send(Err(Error::from(err)));
-                            continue;
-                        }
-                        let mut tx = timeout_tx.clone();
-                        spawn_local(async move {
-                            sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
-                            let _ = tx.send(idx).await;
-                        });
+impl<Req, Resp> RequestManager<Req, Resp>
+where
+    Req: Serialize + 'static,
+    Resp: Serialize + 'static,
+{
+    pub async fn run(
+        mut self,
+        mut req_rx: Receiver<RequestMessage<Req, Resp>>,
+        mut resp_rx: Receiver<Message<Req, Resp>>,
+        mut timeout_rx: Receiver<usize>,
+    ) where
+        Req: Serialize + 'static,
+        Resp: Serialize + 'static,
+    {
+        loop {
+            select! {
+                res = req_rx.next() => {
+                    if res.is_none() {
+                        console_log!("request channel closed, stopping request manager");
+                        return;
                     }
-                    Err(ringbuf::Error::Overflow(tx)) => {
-                        let _ = tx.send(Err(Error::TooManyInFlightRequests));
-                    }
+                    let (req, tx) = res.unwrap();
+                    self.handle_request(req, tx);
                 }
-
-            }
-            res = resp_rx.next() => {
-                if res.is_none() {
-                    break;
-                }
-                let msg = res.unwrap();
-                if let Message::Response { idx, resp } = msg {
-                    match in_flight.remove(idx) {
-                        Some(tx) => {
-                            // Best-effort reply (if the caller is gone then one
-                            // can assume that the request has been canceled or
-                            // something).
-                            let _ = tx.send(resp);
-                        }
-                        None => {
-                            console_log!("request {} came in after request canceled", idx)
-                        }
+                res = resp_rx.next() => {
+                    if res.is_none() {
+                        console_log!("response channel closed, stopping request manager");
+                        return;
                     }
+                    let msg = res.unwrap();
+                    self.handle_response(msg);
+                }
+                res = timeout_rx.next() => {
+                    let idx = res.unwrap();
+                    self.handle_timeout(idx);
                 }
             }
-            res = timeout_rx.next() => {
-                if res.is_none() {
-                    break;
-                }
-                let idx = res.unwrap();
+        }
+    }
 
-                if let Some(tx) = in_flight.remove(idx) {
-                    console_log!("request {} timed out", idx);
-                    let _ = tx.send(Err(Error::RequestTimeout));
+    fn handle_request(&mut self, req: Req, tx: oneshot::Sender<Result<Resp, Error>>) {
+        match self.in_flight.add(tx) {
+            Ok(idx) => {
+                let msg: Message<Req, Resp> = Message::Request { idx, req };
+                let data = bincode::serialize(&msg).unwrap();
+                if let Err(err) = self.dc.send_with_u8_array(&data) {
+                    let tx = self.in_flight.remove(idx).unwrap();
+                    let _ = tx.send(Err(Error::from(err)));
+                    return;
+                }
+                let mut timeout_tx = self.timeout_tx.clone();
+                spawn_local(async move {
+                    sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
+                    let _ = timeout_tx.send(idx).await;
+                });
+            }
+            Err(ringbuf::Error::Overflow(tx)) => {
+                let _ = tx.send(Err(Error::TooManyInFlightRequests));
+            }
+        }
+    }
+
+    fn handle_response(&mut self, msg: Message<Req, Resp>) {
+        if let Message::Response { idx, resp } = msg {
+            match self.in_flight.remove(idx) {
+                Some(tx) => {
+                    // Best-effort reply (if the caller is gone then one
+                    // can assume that the request has been canceled or
+                    // something).
+                    let _ = tx.send(resp);
+                }
+                None => {
+                    console_log!("request {} came in after request canceled", idx)
                 }
             }
+        }
+    }
+
+    fn handle_timeout(&mut self, idx: usize) {
+        if let Some(tx) = self.in_flight.remove(idx) {
+            console_log!("request {} timed out", idx);
+            let _ = tx.send(Err(Error::RequestTimeout));
         }
     }
 }
