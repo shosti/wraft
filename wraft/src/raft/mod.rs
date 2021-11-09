@@ -4,13 +4,15 @@ mod storage;
 mod worker;
 
 use self::worker::RaftDebugState;
+use self::worker::WorkerBuilder;
 use crate::console_log;
 use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
 use base64::write::EncoderStringWriter;
 use errors::{ClientError, Error};
-use futures::channel::mpsc::{channel, Sender};
+use futures::channel::mpsc::unbounded;
+use futures::channel::mpsc::{channel, Sender, Receiver, UnboundedReceiver};
 use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
@@ -23,6 +25,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -41,6 +44,7 @@ pub type ClientMessage<T> = (
 #[derive(Debug, Clone)]
 pub struct Raft<T> {
     client_tx: Sender<ClientMessage<T>>,
+    subscribers: Arc<Mutex<HashMap<u64, Sender<LogCmd<T>>>>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -163,7 +167,10 @@ where
             Self::store_peer_configuration(session_key, &peers);
         };
 
-        let client_tx = worker::run(
+        let (state_machine_tx, state_machine_rx) = unbounded();
+        let subscribers = Arc::new(Mutex::new(HashMap::new()));
+
+        let client_tx = WorkerBuilder {
             node_id,
             session_key,
             peers,
@@ -171,9 +178,28 @@ where
             peers_rx,
             peer_clients,
             rpc_server,
-        );
+            state_machine_tx,
+        }
+        .start();
 
-        Ok(Self { client_tx })
+        spawn_local(Self::handle_subscriptions(
+            state_machine_rx,
+            subscribers.clone(),
+        ));
+
+        Ok(Self {
+            client_tx,
+            subscribers,
+        })
+    }
+
+    pub fn subscribe(&self) -> Receiver<LogCmd<T>> {
+        let (tx, rx) = channel(100);
+        let mut s = self.subscribers.lock().unwrap();
+        let i = s.keys().max().map_or(0, |i| *i) + 1;
+        s.insert(i, tx);
+
+        rx
     }
 
     pub async fn get(&self, key: String) -> Result<Option<T>, ClientError> {
@@ -262,5 +288,28 @@ where
     fn storage() -> web_sys::Storage {
         let window = web_sys::window().expect("no global window");
         window.local_storage().expect("no local storage").unwrap()
+    }
+
+    async fn handle_subscriptions(
+        mut state_machine_rx: UnboundedReceiver<LogCmd<T>>,
+        subscribers: Arc<Mutex<HashMap<u64, Sender<LogCmd<T>>>>>,
+    ) {
+        while let Some(ref cmd) = state_machine_rx.next().await {
+            let mut closed = Vec::new();
+            {
+                let mut s = subscribers.lock().unwrap();
+                for (i, tx) in s.iter_mut() {
+                    if tx.send(cmd.clone()).await.is_err() {
+                        closed.push(*i);
+                    };
+                }
+            }
+            {
+                let mut s = subscribers.lock().unwrap();
+                for i in closed {
+                    s.remove(&i);
+                }
+            }
+        }
     }
 }

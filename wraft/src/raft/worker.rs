@@ -8,7 +8,7 @@ use crate::raft::{
 };
 use crate::util::{sleep, Sleep};
 use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
-use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::channel::mpsc::{channel, Receiver, Sender, UnboundedSender};
 use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
@@ -70,6 +70,7 @@ struct RaftWorkerInner<T> {
     rpc_server: RpcServer<T>,
     peers_rx: Receiver<PeerTransport>,
     current_state: HashMap<String, T>,
+    state_machine_tx: UnboundedSender<LogCmd<T>>,
 
     // Peers is constant throughout the runtime (regardless of whether they're
     // online or not)
@@ -116,47 +117,53 @@ where
     }
 }
 
-pub fn run<T>(
-    node_id: NodeId,
-    session_key: u128,
-    peers: Vec<NodeId>,
-    rpc_rx: Receiver<RpcMessage<T>>,
-    peers_rx: Receiver<PeerTransport>,
-    peer_clients: HashMap<NodeId, RpcClient<T>>,
-    rpc_server: RpcServer<T>,
-) -> Sender<ClientMessage<T>>
+pub struct WorkerBuilder<T> {
+    pub node_id: NodeId,
+    pub session_key: u128,
+    pub peers: Vec<NodeId>,
+    pub rpc_rx: Receiver<RpcMessage<T>>,
+    pub peers_rx: Receiver<PeerTransport>,
+    pub peer_clients: HashMap<NodeId, RpcClient<T>>,
+    pub rpc_server: RpcServer<T>,
+    pub state_machine_tx: UnboundedSender<LogCmd<T>>,
+}
+
+impl<T> WorkerBuilder<T>
 where
     T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
 {
-    let (client_tx, client_rx) = channel(100);
+    pub fn start(self) -> Sender<ClientMessage<T>> {
+        let (client_tx, client_rx) = channel(100);
 
-    let cluster_size = peers.len() + 1;
-    let storage = Storage::new(session_key);
-    let inner = RaftWorkerInner {
-        leader_id: None,
-        storage,
-        node_id,
-        session_key,
-        cluster_size,
-        peer_clients,
-        peers,
-        rpc_rx,
-        client_rx,
-        peers_rx,
-        rpc_server,
-        current_state: HashMap::new(),
-        commit_index: 0,
-        last_applied: 0,
-    };
+        let cluster_size = self.peers.len() + 1;
+        let storage = Storage::new(self.session_key);
+        let inner = RaftWorkerInner {
+            leader_id: None,
+            storage,
+            node_id: self.node_id,
+            session_key: self.session_key,
+            cluster_size,
+            peer_clients: self.peer_clients,
+            peers: self.peers,
+            rpc_rx: self.rpc_rx,
+            client_rx,
+            peers_rx: self.peers_rx,
+            rpc_server: self.rpc_server,
+            state_machine_tx: self.state_machine_tx,
+            current_state: HashMap::new(),
+            commit_index: 0,
+            last_applied: 0,
+        };
 
-    spawn_local(async move {
-        let mut worker = RaftWorkerState::Follower(RaftWorker::new(inner));
-        loop {
-            worker = worker.next().await;
-        }
-    });
+        spawn_local(async move {
+            let mut worker = RaftWorkerState::Follower(RaftWorker::new(inner));
+            loop {
+                worker = worker.next().await;
+            }
+        });
 
-    client_tx
+        client_tx
+    }
 }
 
 impl<S, T> RaftWorker<S, T>
@@ -243,7 +250,7 @@ where
             .storage
             .sublog((self.inner.last_applied + 1)..=self.inner.commit_index)
         {
-            match entry.cmd {
+            match entry.cmd.clone() {
                 LogCmd::Set { key, data } => {
                     self.inner.current_state.insert(key, data);
                 }
@@ -252,6 +259,10 @@ where
                 }
             }
             self.inner.last_applied = entry.idx;
+            self.inner
+                .state_machine_tx
+                .unbounded_send(entry.cmd)
+                .unwrap();
         }
     }
 
