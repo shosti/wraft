@@ -23,6 +23,7 @@ wee_alloc = "0.4"
 async-trait = "0.1"
 rand = "0.8"
 base64 = "0.13"
+yew = "0.18"
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
