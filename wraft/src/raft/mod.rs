@@ -12,7 +12,7 @@ use crate::webrtc_rpc::transport;
 use base64::write::EncoderStringWriter;
 use errors::{ClientError, Error};
 use futures::channel::mpsc::unbounded;
-use futures::channel::mpsc::{channel, Sender, Receiver, UnboundedReceiver};
+use futures::channel::mpsc::{channel, Receiver, Sender, UnboundedReceiver};
 use futures::channel::oneshot;
 use futures::select;
 use futures::sink::SinkExt;
@@ -66,6 +66,7 @@ pub enum ClientRequest<T> {
     Get(String),
     Set(String, T),
     Delete(String),
+    GetCurrentState,
     Debug,
 }
 
@@ -73,6 +74,7 @@ pub enum ClientRequest<T> {
 pub enum ClientResponse<T> {
     Ack,
     Get(Option<T>),
+    GetCurrentState(HashMap<String, T>),
     Debug(Box<RaftDebugState<T>>),
 }
 
@@ -219,6 +221,15 @@ where
     pub async fn delete(&self, key: String) -> Result<(), ClientError> {
         let req = ClientRequest::Delete(key);
         self.do_client_request(req).await.map(|_| ())
+    }
+
+    pub async fn get_current_state(&self) -> Result<HashMap<String, T>, ClientError> {
+        let req = ClientRequest::GetCurrentState;
+        match self.do_client_request(req).await {
+            Ok(ClientResponse::GetCurrentState(state)) => Ok(state),
+            Err(err) => Err(err),
+            _ => unreachable!(),
+        }
     }
 
     pub async fn debug(&self) -> Result<Box<RaftDebugState<T>>, ClientError> {

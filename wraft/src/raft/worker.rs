@@ -244,6 +244,12 @@ where
         let _ = tx.send(Ok(ClientResponse::Debug(Box::new(self.into()))));
     }
 
+    fn handle_get_current_state(&self, tx: oneshot::Sender<ClientResult<T>>) {
+        let _ = tx.send(Ok(ClientResponse::GetCurrentState(
+            self.inner.current_state.clone(),
+        )));
+    }
+
     fn apply_log(&mut self) {
         for entry in self
             .inner
@@ -305,6 +311,7 @@ where
                     let (req, resp_tx) = res.expect("Client channel closed");
                     match req {
                         ClientRequest::Debug => self.handle_debug(resp_tx),
+                        ClientRequest::GetCurrentState => self.handle_get_current_state(resp_tx),
                         _ => self.forward_client_request(req, resp_tx),
                     }
                 }
@@ -419,6 +426,7 @@ where
                     let (req, resp_tx) = res.expect("Client channel closed");
                     match req {
                         ClientRequest::Debug => self.handle_debug(resp_tx),
+                        ClientRequest::GetCurrentState => self.handle_get_current_state(resp_tx),
                         _ => {
                             let _ = resp_tx.send(Err(ClientError::Unavailable));
                         }
@@ -749,6 +757,7 @@ where
             }
             ClientRequest::Delete(ref key) => self.handle_delete_request(key, resp_tx),
             ClientRequest::Debug => self.handle_debug(resp_tx),
+            ClientRequest::GetCurrentState => self.handle_get_current_state(resp_tx),
         }
     }
 
