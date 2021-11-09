@@ -8,6 +8,7 @@ use crate::console_log;
 use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
+use base64::write::EncoderStringWriter;
 use errors::{ClientError, Error};
 use futures::channel::mpsc::{channel, Sender};
 use futures::channel::oneshot;
@@ -21,6 +22,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
+use std::io::Cursor;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -119,41 +121,52 @@ impl<T> Raft<T>
 where
     T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
 {
-    pub async fn initiate(
+    pub async fn start(
         hostname: &str,
         session_key: u128,
         cluster_size: usize,
     ) -> Result<Self, Error> {
         let (peers_tx, mut peers_rx) = channel(10);
-        let mut peers = Vec::new();
-        let mut peer_clients = HashMap::new();
         let node_id = Self::generate_node_id(hostname, session_key);
 
         spawn_local(introduce(node_id, session_key, peers_tx));
 
-        let target_size = cluster_size - 1;
-        while peers.len() < target_size {
-            let peer = peers_rx.next().await.ok_or(Error::NotEnoughPeers)?;
-            console_log!("Got client: {:016x}", peer.node_id());
-
-            let peer_id = peer.node_id();
-            let (client, server) = peer.start();
-            peer_clients.insert(peer_id, client);
-            peers.push(server);
-        }
-
         let (rpc_tx, rpc_rx) = channel(100);
         let rpc_server = RpcServer::new(rpc_tx);
 
-        while let Some(mut peer) = peers.pop() {
-            let s = rpc_server.clone();
-            spawn_local(async move {
-                peer.serve(s).await;
-            });
-        }
+        let mut peer_clients = HashMap::new();
+        let peers;
+        if let Some(p) = Self::load_peer_configuration(session_key) {
+            // We're rejoining a cluster that's already running
+            peers = p;
+        } else {
+            // We've got to wait for cluster to bootstrap
+            let mut servers = Vec::new();
+            let target_size = cluster_size - 1;
+            while servers.len() < target_size {
+                let peer = peers_rx.next().await.ok_or(Error::NotEnoughPeers)?;
+                console_log!("Got client: {}", peer.node_id());
+
+                let peer_id = peer.node_id();
+                let (client, server) = peer.start();
+                peer_clients.insert(peer_id, client);
+                servers.push(server);
+            }
+
+            while let Some(mut server) = servers.pop() {
+                let s = rpc_server.clone();
+                spawn_local(async move {
+                    server.serve(s).await;
+                });
+            }
+            peers = peer_clients.keys().cloned().collect();
+            Self::store_peer_configuration(session_key, &peers);
+        };
+
         let client_tx = worker::run(
             node_id,
             session_key,
+            peers,
             rpc_rx,
             peers_rx,
             peer_clients,
@@ -219,5 +232,35 @@ where
         hostname.hash(&mut h);
         session_key.hash(&mut h);
         h.finish()
+    }
+
+    fn load_peer_configuration(session_key: u128) -> Option<Vec<NodeId>> {
+        let key = Self::peer_configuration_key(session_key);
+        if let Some(s) = Self::storage().get_item(&key).unwrap() {
+            let mut data = Cursor::new(s);
+            let buf = base64::read::DecoderReader::new(&mut data, base64::STANDARD);
+            let conf = bincode::deserialize_from(buf).unwrap();
+            Some(conf)
+        } else {
+            None
+        }
+    }
+
+    fn store_peer_configuration(session_key: u128, peers: &[NodeId]) {
+        let key = Self::peer_configuration_key(session_key);
+        let mut buf = EncoderStringWriter::new(base64::STANDARD);
+        bincode::serialize_into(&mut buf, peers).unwrap();
+        let data = buf.into_inner();
+
+        Self::storage().set_item(&key, &data).unwrap();
+    }
+
+    fn peer_configuration_key(session_key: u128) -> String {
+        format!("peer-configuration-{}", session_key)
+    }
+
+    fn storage() -> web_sys::Storage {
+        let window = web_sys::window().expect("no global window");
+        window.local_storage().expect("no local storage").unwrap()
     }
 }

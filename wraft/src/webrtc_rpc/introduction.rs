@@ -1,4 +1,5 @@
 use crate::console_log;
+use crate::util::sleep;
 use crate::webrtc_rpc::error::Error;
 use crate::webrtc_rpc::transport::PeerTransport;
 use futures::channel::mpsc::{channel, Receiver, Sender};
@@ -9,6 +10,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use js_sys::Reflect;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
@@ -78,7 +80,7 @@ pub async fn initiate(
 
     let (ws, mut errors_rx) = init_ws(&state).await?;
     wait_for_ws_opened(ws.clone()).await;
-    send_join_command(node_id, session_id, ws).await?;
+    send_join_command(node_id, session_id, &ws).await?;
 
     loop {
         select! {
@@ -144,16 +146,26 @@ async fn introduce(peer_id: u64, ws: WebSocket, state: State) -> Result<(), Erro
     let sdp_data = local_description(&pc).await?;
     state.insert_peer(peer_id, pc);
 
-    let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
+    let (done_tx, mut done_rx) = futures::channel::oneshot::channel::<()>();
     let dc_clone = dc.clone();
     spawn_local(async move {
         wait_for_dc_initiated(dc_clone).await;
         done_tx.send(()).unwrap();
     });
 
-    send_offer(peer_id, &sdp_data, ws, state.clone()).await?;
-
-    done_rx.await.unwrap();
+    loop {
+        send_offer(peer_id, &sdp_data, &ws, state.clone()).await?;
+        let mut retry = sleep(Duration::from_secs(5));
+        select! {
+            res = done_rx => {
+                res.unwrap();
+                break;
+            }
+            _ = retry => {
+                console_log!("retrying offer to {}", peer_id);
+            }
+        }
+    }
     assert_eq!(dc.ready_state(), RtcDataChannelState::Open);
 
     state.send_peer(peer_id, dc).await?;
@@ -178,7 +190,7 @@ fn new_peer_connection(
                 candidate: candidate.candidate(),
                 sdp_mid: candidate.sdp_mid(),
             });
-            send_command(ws.clone(), &cmd).unwrap();
+            send_command(ws.clone().as_ref(), &cmd).unwrap();
         }
     }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>);
     pc.set_onicecandidate(Some(ice_cb.as_ref().unchecked_ref()));
@@ -187,7 +199,7 @@ fn new_peer_connection(
     Ok(pc)
 }
 
-fn send_command(ws: WebSocket, command: &Command) -> Result<(), Error> {
+fn send_command(ws: &WebSocket, command: &Command) -> Result<(), Error> {
     let data = bincode::serialize(command)?;
     ws.send_with_u8_array(&data)?;
     Ok(())
@@ -207,7 +219,7 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
     });
 
     let answer_sdp = remote_description(&offer.sdp_data, &pc).await?;
-    send_answer(peer_id, &answer_sdp, ws, state.clone()).await?;
+    send_answer(peer_id, &answer_sdp, &ws, state.clone()).await?;
 
     let dc = dc_rx.await.unwrap();
     state.send_peer(peer_id, dc).await?;
@@ -364,7 +376,7 @@ async fn remote_description(sdp_data: &str, pc: &RtcPeerConnection) -> Result<St
 async fn send_offer(
     peer_id: u64,
     sdp_data: &str,
-    ws: WebSocket,
+    ws: &WebSocket,
     state: State,
 ) -> Result<(), Error> {
     let cmd = Command::Offer(Offer {
@@ -379,7 +391,7 @@ async fn send_offer(
 async fn send_answer(
     peer_id: u64,
     answer_sdp: &str,
-    ws: WebSocket,
+    ws: &WebSocket,
     state: State,
 ) -> Result<(), Error> {
     let cmd = Command::Answer(Offer {
@@ -391,7 +403,7 @@ async fn send_answer(
     send_command(ws, &cmd)
 }
 
-async fn send_join_command(node_id: u64, session_id: u128, ws: WebSocket) -> Result<(), Error> {
+async fn send_join_command(node_id: u64, session_id: u128, ws: &WebSocket) -> Result<(), Error> {
     let cmd = Command::Join(Join {
         node_id,
         session_id,

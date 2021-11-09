@@ -74,7 +74,7 @@ async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
     sk.set_inner_html(format!("<h2>Session key: {:032x}</h2>", session_key).as_str());
     hide_start_form();
 
-    let raft = Raft::initiate(&hostname, session_key, cluster_size)
+    let raft = Raft::start(&hostname, session_key, cluster_size)
         .await
         .unwrap();
 

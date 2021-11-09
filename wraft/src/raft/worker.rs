@@ -119,6 +119,7 @@ where
 pub fn run<T>(
     node_id: NodeId,
     session_key: u128,
+    peers: Vec<NodeId>,
     rpc_rx: Receiver<RpcMessage<T>>,
     peers_rx: Receiver<PeerTransport>,
     peer_clients: HashMap<NodeId, RpcClient<T>>,
@@ -129,9 +130,8 @@ where
 {
     let (client_tx, client_rx) = channel(100);
 
-    let cluster_size = peer_clients.len() + 1;
+    let cluster_size = peers.len() + 1;
     let storage = Storage::new(session_key);
-    let peers = peer_clients.keys().cloned().collect();
     let inner = RaftWorkerInner {
         leader_id: None,
         storage,
@@ -413,6 +413,9 @@ where
                         }
                     }
                 }
+                res = self.inner.peers_rx.next() => {
+                    self.handle_new_peer(res.expect("peer channel closed"));
+                }
                 _ = timeout => {
                     console_log!("ELECTION TIMED OUT");
                     return RaftWorkerState::Candidate(self);
@@ -538,6 +541,9 @@ where
                     let (req, resp_tx) = res.expect("client channel closed");
                     self.handle_client_request(req, resp_tx, &mut heartbeat);
                 }
+                res = self.inner.peers_rx.next() => {
+                    self.handle_new_peer(res.expect("peer channel closed"));
+                }
                 _ = heartbeat => {
                     let peers = self.inner.peers.clone();
                     for peer in peers {
@@ -579,44 +585,46 @@ where
     fn append_entries(&mut self, peer_id: NodeId) {
         const MAX_BATCH_SIZE: u64 = 100;
 
-        let mut client = self.inner.peer_clients.get(&peer_id).unwrap().clone();
-        if !client.is_connected() {
-            return;
-        }
-        if self.state.in_flight_peers.contains(&peer_id) {
-            return;
-        }
+        if let Some(c) = self.inner.peer_clients.get(&peer_id) {
+            let mut client = c.clone();
+            if !client.is_connected() {
+                return;
+            }
+            if self.state.in_flight_peers.contains(&peer_id) {
+                return;
+            }
 
-        let next_index = *self.state.next_indices.get(&peer_id).unwrap();
-        let prev_log_index = next_index - 1;
-        let prev_log_term = if prev_log_index > 0 {
-            self.inner.storage.get_log(prev_log_index).unwrap().term
-        } else {
-            0
-        };
-        let entries = self
-            .inner
-            .storage
-            .sublog(next_index..(next_index + MAX_BATCH_SIZE));
-        let last_entry = entries
-            .last()
-            .map_or(self.inner.storage.last_log_index(), |e| e.idx);
-        let first_entry = entries.first().map_or(last_entry, |e| e.idx);
-        let req = RpcRequest::AppendEntries(AppendEntriesRequest {
-            leader_id: self.inner.node_id,
-            term: self.inner.storage.current_term(),
-            prev_log_index,
-            prev_log_term,
-            entries,
-            leader_commit: self.inner.commit_index,
-        });
-        self.state.in_flight_peers.insert(peer_id);
+            let next_index = *self.state.next_indices.get(&peer_id).unwrap();
+            let prev_log_index = next_index - 1;
+            let prev_log_term = if prev_log_index > 0 {
+                self.inner.storage.get_log(prev_log_index).unwrap().term
+            } else {
+                0
+            };
+            let entries = self
+                .inner
+                .storage
+                .sublog(next_index..(next_index + MAX_BATCH_SIZE));
+            let last_entry = entries
+                .last()
+                .map_or(self.inner.storage.last_log_index(), |e| e.idx);
+            let first_entry = entries.first().map_or(last_entry, |e| e.idx);
+            let req = RpcRequest::AppendEntries(AppendEntriesRequest {
+                leader_id: self.inner.node_id,
+                term: self.inner.storage.current_term(),
+                prev_log_index,
+                prev_log_term,
+                entries,
+                leader_commit: self.inner.commit_index,
+            });
+            self.state.in_flight_peers.insert(peer_id);
 
-        let mut tx = self.state.responses_tx.clone();
-        spawn_local(async move {
-            let resp = client.call(req).await;
-            let _ = tx.send((peer_id, first_entry..=last_entry, resp)).await;
-        });
+            let mut tx = self.state.responses_tx.clone();
+            spawn_local(async move {
+                let resp = client.call(req).await;
+                let _ = tx.send((peer_id, first_entry..=last_entry, resp)).await;
+            });
+        }
     }
 
     fn handle_append_entries_response(
