@@ -3,6 +3,7 @@ pub mod ringbuf;
 pub mod util;
 mod webrtc_rpc;
 
+use crate::util::interval;
 use crate::util::sleep;
 use futures::prelude::*;
 use futures::select;
@@ -77,10 +78,17 @@ async fn run_raft(hostname: String, session_key: u128, cluster_size: usize) {
         .await
         .unwrap();
 
-    setup_controls(raft);
+    setup_controls(raft.clone());
 
-    future::pending::<()>().await;
-    unreachable!();
+    let raft_elem = document.get_element_by_id("raft").expect("#raft not found");
+    let raft_content = raft_elem.dyn_ref::<HtmlElement>().unwrap();
+
+    let mut debug_interval = interval(Duration::from_secs(1));
+    while let Some(()) = debug_interval.next().await {
+        let s = raft.debug().await;
+        let content = format!("<pre>{:#?}</pre>", s);
+        raft_content.set_inner_html(&content);
+    }
 }
 
 fn setup_controls(raft: Raft<String>) {
