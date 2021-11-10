@@ -260,14 +260,18 @@ impl TodoItem {
         match self.state {
             TodoState::Todo => html! {
                 <>
-                <li onclick=toggle>{&self.text}</li>
-                    <span onclick=delete>{ "🗑" }</span>
+                    <li>
+                    <span onclick=toggle>{&self.text}</span>
+                    <span onclick=delete>{ " 🗑" }</span>
+                    </li>
                     </>
             },
             TodoState::Done => html! {
                 <>
-                <li onclick=toggle><del>{&self.text}</del></li>
-                    <span onclick=delete>{ "🗑" }</span>
+                    <li>
+                    <span onclick=toggle><del>{&self.text}</del></span>
+                    <span onclick=delete>{ " 🗑" }</span>
+                    </li>
                     </>
             },
         }
