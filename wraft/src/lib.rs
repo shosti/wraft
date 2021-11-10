@@ -5,6 +5,7 @@ pub mod ringbuf;
 pub mod util;
 mod webrtc_rpc;
 use wasm_bindgen::prelude::*;
+pub mod init;
 mod todo;
 
 // Use `wee_alloc` as the global allocator.
@@ -19,8 +20,7 @@ pub enum Route {
     Home,
 }
 
-pub struct Model {
-}
+pub struct Model {}
 
 impl Component for Model {
     type Message = ();

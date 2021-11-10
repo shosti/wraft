@@ -1,7 +1,6 @@
-use crate::console_log;
+use crate::init::{ClusterInit, ClusterWaiting};
 use crate::raft::{LogCmd, Raft};
 use futures::stream::StreamExt;
-use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use wasm_bindgen_futures::spawn_local;
@@ -15,16 +14,14 @@ pub struct Model {
 }
 
 enum State {
-    Setup { session_key: String },
-    Waiting { session_key: String },
+    Setup,
+    Waiting { session_key: u128 },
     Running { todos: TodoList, new_todo: String },
 }
 
 pub enum Msg {
-    UpdateSessionKey(String),
     UpdateNewTodo(String),
-    StartCluster,
-    JoinCluster,
+    StartCluster(u128),
     ClusterStarted(TodoList),
     NewTodo,
     TodosUpdate(LogCmd<TodoItem>),
@@ -57,43 +54,15 @@ impl Component for Model {
     fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
         Self {
             link,
-            state: State::Setup {
-                session_key: "".into(),
-            },
+            state: State::Setup,
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
-            Msg::StartCluster => {
-                let session_id = self.generate_session_id();
-                self.start_raft(session_id);
-                self.state = State::Waiting {
-                    session_key: format!("{:032x}", session_id),
-                };
-                true
-            }
-            Msg::JoinCluster => {
-                if let State::Setup { session_key } = &self.state {
-                    match u128::from_str_radix(session_key, 16) {
-                        Ok(session_id) => {
-                            self.start_raft(session_id);
-                            self.state = State::Waiting {
-                                session_key: session_key.clone(),
-                            };
-                            true
-                        }
-                        Err(_) => {
-                            console_log!("BAD SESSION KEY!!!");
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-            Msg::UpdateSessionKey(key) => {
-                self.state = State::Setup { session_key: key };
+            Msg::StartCluster(session_key) => {
+                self.start_raft(session_key);
+                self.state = State::Waiting { session_key };
                 true
             }
             Msg::ClusterStarted(todos) => {
@@ -148,46 +117,24 @@ impl Component for Model {
 
     fn view(&self) -> Html {
         match &self.state {
-            State::Setup { session_key } => self.render_setup(session_key.clone()),
-            State::Waiting { session_key } => self.render_waiting(session_key.clone()),
+            State::Setup => self.render_setup(),
+            State::Waiting { session_key } => self.render_waiting(*session_key),
             State::Running { todos, new_todo } => todos.render(new_todo.clone()),
         }
     }
 }
 
 impl Model {
-    fn render_setup(&self, session_key: String) -> Html {
-        let start = self.link.callback(|_| Msg::StartCluster);
+    fn render_setup(&self) -> Html {
+        let onstart = self.link.callback(Msg::StartCluster);
         html! {
-            <>
-                <h1>{ "Startup" }</h1>
-                <p>
-                <button type="button" onclick=start>{ "Start new cluster" }</button>
-                </p>
-                <p>
-                <div>
-                <label for="join-session-key">{ "Join existing cluster" }</label>
-                </div>
-                <input
-                type="text"
-                value=session_key
-                name="join-session-key"
-                oninput=self.link.callback(|e: InputData| Msg::UpdateSessionKey(e.value))
-                onkeypress=self.link.batch_callback(move |e: KeyboardEvent| {
-                    if e.key() == "Enter" { Some(Msg::JoinCluster) } else { None }
-                })
-                />
-                </p>
-                </>
+            <ClusterInit onstart=onstart />
         }
     }
 
-    fn render_waiting(&self, session_key: String) -> Html {
+    fn render_waiting(&self, session_key: u128) -> Html {
         html! {
-            <>
-            <h1>{ "Waiting for cluster to start..." }</h1>
-                <h3>{ format!("Session key is {}", session_key) }</h3>
-                </>
+            <ClusterWaiting session_key=session_key />
         }
     }
 
@@ -197,10 +144,6 @@ impl Model {
             .location()
             .hostname()
             .unwrap()
-    }
-
-    fn generate_session_id(&self) -> u128 {
-        thread_rng().gen()
     }
 
     fn start_raft(&self, session_id: u128) {
