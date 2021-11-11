@@ -1,5 +1,6 @@
+use crate::console_log;
 use crate::init::{ClusterInit, ClusterWaiting};
-use crate::raft::Raft;
+use crate::raft::{Raft, RaftStateDump};
 use futures::channel::oneshot;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::window;
@@ -11,6 +12,7 @@ pub struct Model {
     state: State,
     link: ComponentLink<Self>,
     result: Option<BenchResult>,
+    state_dump: Option<Box<RaftStateDump<String>>>,
 }
 
 enum State {
@@ -25,6 +27,8 @@ pub enum Msg {
     StartBenchmark,
     StopBenchmark,
     BenchResult(BenchResult),
+    DumpState,
+    StateDumped(Box<RaftStateDump<String>>),
 }
 
 pub struct Benchmark {
@@ -53,6 +57,7 @@ impl Component for Model {
             state: State::Setup,
             link,
             result: None,
+            state_dump: None,
         }
     }
 
@@ -87,6 +92,16 @@ impl Component for Model {
                 self.result = Some(result);
                 true
             }
+            Msg::DumpState => {
+                if let State::Running { bench } = &self.state {
+                    bench.dump_state(self.link.clone());
+                }
+                false
+            }
+            Msg::StateDumped(dump) => {
+                self.state_dump = Some(dump);
+                true
+            }
         }
     }
 
@@ -105,29 +120,26 @@ impl Component for Model {
             State::Waiting { session_key } => html! {
                 <ClusterWaiting session_key=*session_key />
             },
-            State::Running { bench } => {
-                let bench_result = if let Some(res) = &self.result {
-                    res.render()
-                } else {
-                    html! {}
-                };
-                match bench.state {
-                    BenchState::Running { .. } => html! {
-                        <>
-                            <h1>{ "Benchmark running..." }</h1>
-                        { bench_result }
-                        <button type="button" onclick=self.link.callback(|_| Msg::StopBenchmark)>{ "Stop" }</button>
-                            </>
-                    },
-                    BenchState::Stopped => html! {
-                        <>
-                            <h1>{ "Benchmark WRaft" }</h1>
-                        { bench_result }
-                        <button type="button" onclick=self.link.callback(|_| Msg::StartBenchmark)>{ "Start" }</button>
-                            </>
-                    },
-                }
-            }
+            State::Running { bench } => match bench.state {
+                BenchState::Running { .. } => html! {
+                    <>
+                        <h1>{ "Benchmark running..." }</h1>
+                    { self.render_bench_result() }
+                    <button type="button" onclick=self.link.callback(|_| Msg::StopBenchmark)>{ "Stop" }</button>
+                        <button type="button" onclick=self.link.callback(|_| Msg::DumpState)>{ "Show Raft State" }</button>
+                    { self.render_state_dump() }
+                        </>
+                },
+                BenchState::Stopped => html! {
+                    <>
+                        <h1>{ "Benchmark WRaft" }</h1>
+                    { self.render_bench_result() }
+                    <button type="button" onclick=self.link.callback(|_| Msg::StartBenchmark)>{ "Start" }</button>
+                        <button type="button" onclick=self.link.callback(|_| Msg::DumpState)>{ "Show Raft State" }</button>
+                    { self.render_state_dump() }
+                        </>
+                },
+            },
         }
     }
 }
@@ -151,6 +163,24 @@ impl Model {
             .location()
             .hostname()
             .unwrap()
+    }
+
+    fn render_bench_result(&self) -> Html {
+        if let Some(res) = &self.result {
+            res.render()
+        } else {
+            html! {}
+        }
+    }
+
+    fn render_state_dump(&self) -> Html {
+        if let Some(dump) = &self.state_dump {
+            html! {
+                <pre>{ format!("{:#?}", dump) }</pre>
+            }
+        } else {
+            html! {}
+        }
     }
 }
 
@@ -194,6 +224,18 @@ impl Benchmark {
         }
     }
 
+    pub fn dump_state(&self, link: ComponentLink<Model>) {
+        let raft = self.raft.clone();
+        spawn_local(async move {
+            match raft.debug().await {
+                Ok(dump) => {
+                    link.send_message(Msg::StateDumped(dump));
+                }
+                Err(err) => console_log!("Error dumping raft state: {:?}", err),
+            }
+        });
+    }
+
     async fn run_benchmark(
         raft: Raft<String>,
         link: ComponentLink<Model>,
@@ -213,22 +255,18 @@ impl Benchmark {
             raft.set(key.clone(), i.to_string()).await.unwrap();
             i += 1;
             if i % 50 == 0 {
-                let t_end = performance.now();
-                let res = BenchResult {
+                link.send_message(Msg::BenchResult(BenchResult {
                     iterations: i,
                     t_start,
-                    t_end,
-                };
-                link.send_message(Msg::BenchResult(res));
+                    t_end: performance.now(),
+                }));
             }
         }
-        let t_end = performance.now();
-        let res = BenchResult {
+        link.send_message(Msg::BenchResult(BenchResult {
             iterations: i,
             t_start,
-            t_end,
-        };
-        link.send_message(Msg::BenchResult(res));
+            t_end: performance.now(),
+        }));
     }
 }
 

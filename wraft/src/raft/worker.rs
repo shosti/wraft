@@ -3,8 +3,8 @@ use crate::raft::rpc_server::RpcServer;
 use crate::raft::storage::Storage;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
-    ClientResponse, LogCmd, LogEntry, LogIndex, NodeId, RequestVoteRequest, RequestVoteResponse,
-    RpcMessage, RpcRequest, RpcResponse, TermIndex,
+    ClientResponse, LogCmd, LogEntry, LogIndex, NodeId, RaftStateDump, RequestVoteRequest,
+    RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
 };
 use crate::util::{sleep, Sleep};
 use crate::webrtc_rpc::transport::{self, Client, PeerTransport};
@@ -15,7 +15,7 @@ use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rand::{thread_rng, Rng};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -84,24 +84,6 @@ struct RaftWorkerInner<T> {
 
     // Persistent state
     storage: Storage<T>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RaftDebugState<T> {
-    state: String,
-    leader_id: Option<NodeId>,
-    node_id: NodeId,
-    session_key: u128,
-    cluster_size: usize,
-    peers: Vec<NodeId>,
-    online_peers: Vec<NodeId>,
-    voted_for: Option<NodeId>,
-    current_term: TermIndex,
-    last_log_index: LogIndex,
-
-    commit_index: LogIndex,
-    last_applied: LogIndex,
-    current_state: HashMap<String, T>,
 }
 
 impl<T> RaftWorkerState<T>
@@ -863,7 +845,7 @@ where
     }
 }
 
-impl<S, T> From<&RaftWorker<S, T>> for RaftDebugState<T>
+impl<S, T> From<&RaftWorker<S, T>> for RaftStateDump<T>
 where
     S: std::fmt::Debug,
     T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,

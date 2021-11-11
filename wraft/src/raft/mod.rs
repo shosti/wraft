@@ -3,7 +3,6 @@ mod rpc_server;
 mod storage;
 mod worker;
 
-use self::worker::RaftDebugState;
 use self::worker::WorkerBuilder;
 use crate::console_log;
 use crate::util::sleep;
@@ -75,7 +74,7 @@ pub enum ClientResponse<T> {
     Ack,
     Get(Option<T>),
     GetCurrentState(HashMap<String, T>),
-    Debug(Box<RaftDebugState<T>>),
+    Debug(Box<RaftStateDump<T>>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -122,6 +121,24 @@ pub enum LogCmd<T> {
 }
 
 const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RaftStateDump<T> {
+    state: String,
+    leader_id: Option<NodeId>,
+    node_id: NodeId,
+    session_key: u128,
+    cluster_size: usize,
+    peers: Vec<NodeId>,
+    online_peers: Vec<NodeId>,
+    voted_for: Option<NodeId>,
+    current_term: TermIndex,
+    last_log_index: LogIndex,
+
+    commit_index: LogIndex,
+    last_applied: LogIndex,
+    current_state: HashMap<String, T>,
+}
 
 impl<T> Raft<T>
 where
@@ -232,7 +249,7 @@ where
         }
     }
 
-    pub async fn debug(&self) -> Result<Box<RaftDebugState<T>>, ClientError> {
+    pub async fn debug(&self) -> Result<Box<RaftStateDump<T>>, ClientError> {
         let req = ClientRequest::Debug;
         match self.do_client_request(req).await {
             Ok(ClientResponse::Debug(debug)) => Ok(debug),
