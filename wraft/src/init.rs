@@ -17,6 +17,7 @@ pub enum Msg {
     UpdateSessionKey(String),
     StartCluster,
     JoinCluster,
+    ClearStorage,
 }
 
 impl Component for ClusterInit {
@@ -55,6 +56,16 @@ impl Component for ClusterInit {
                     false
                 }
             },
+            Msg::ClearStorage => {
+                web_sys::window()
+                    .unwrap()
+                    .local_storage()
+                    .unwrap()
+                    .unwrap()
+                    .clear()
+                    .unwrap();
+                false
+            },
         }
     }
 
@@ -84,6 +95,9 @@ impl Component for ClusterInit {
                     if e.key() == "Enter" { Some(Msg::JoinCluster) } else { None }
                 })
                 />
+                <div>
+                <button type="button" onclick=self.link.callback(|_| Msg::ClearStorage)>{ "Clear local storage" }</button>
+                </div>
                 </p>
                 </>
         }

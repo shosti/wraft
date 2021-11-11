@@ -45,7 +45,6 @@ impl Component for Model {
         html! {
             <Router<Route>
                 render=Router::render(|switch| {
-                    console_log!("SWITCH: {:#?}", switch);
                     match switch {
                         Route::Home => html! {
                             <>
