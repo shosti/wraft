@@ -5,6 +5,7 @@ pub mod ringbuf;
 pub mod util;
 mod webrtc_rpc;
 use wasm_bindgen::prelude::*;
+mod benchmark;
 pub mod init;
 mod todo;
 
@@ -16,6 +17,8 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 pub enum Route {
     #[to = "/todo"]
     Todo,
+    #[to = "/bench"]
+    Benchmark,
     #[to = "/"]
     Home,
 }
@@ -49,11 +52,15 @@ impl Component for Model {
                                 <h1>{ "Try out WRaft!" }</h1>
                                 <ul>
                                 <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
+                                <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
                                 </ul>
                                 </>
                         },
                         Route::Todo => html! {
                             <todo::Model />
+                        },
+                        Route::Benchmark => html! {
+                            <benchmark::Model />
                         },
                     }
                 })
