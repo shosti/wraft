@@ -11,11 +11,11 @@ use crate::webrtc_rpc::transport;
 use base64::write::EncoderStringWriter;
 use errors::{ClientError, Error};
 use futures::channel::mpsc::unbounded;
-use futures::channel::mpsc::{channel, Receiver, Sender, UnboundedReceiver};
+use futures::channel::mpsc::{channel, Sender, UnboundedReceiver};
 use futures::channel::oneshot;
-use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
+use futures::{select, Stream};
 use rpc_server::RpcServer;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
@@ -40,10 +39,10 @@ pub type ClientMessage<Cmd> = (
     oneshot::Sender<Result<ClientResponse<Cmd>, ClientError>>,
 );
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Raft<Cmd> {
     client_tx: Sender<ClientMessage<Cmd>>,
-    subscribers: Arc<Mutex<HashMap<u64, Sender<Cmd>>>>,
+    state_machine_rx: UnboundedReceiver<Cmd>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -177,7 +176,6 @@ where
         };
 
         let (state_machine_tx, state_machine_rx) = unbounded();
-        let subscribers = Arc::new(Mutex::new(HashMap::new()));
 
         let client_tx = WorkerBuilder {
             node_id,
@@ -191,24 +189,10 @@ where
         }
         .start();
 
-        spawn_local(Self::handle_subscriptions(
-            state_machine_rx,
-            subscribers.clone(),
-        ));
-
         Ok(Self {
             client_tx,
-            subscribers,
+            state_machine_rx,
         })
-    }
-
-    pub fn subscribe(&self) -> Receiver<Cmd> {
-        let (tx, rx) = channel(100);
-        let mut s = self.subscribers.lock().unwrap();
-        let i = s.keys().max().map_or(0, |i| *i) + 1;
-        s.insert(i, tx);
-
-        rx
     }
 
     pub async fn send(&self, val: Cmd) -> Result<(), ClientError> {
@@ -284,27 +268,19 @@ where
         let window = web_sys::window().expect("no global window");
         window.local_storage().expect("no local storage").unwrap()
     }
+}
 
-    async fn handle_subscriptions(
-        mut state_machine_rx: UnboundedReceiver<Cmd>,
-        subscribers: Arc<Mutex<HashMap<u64, Sender<Cmd>>>>,
-    ) {
-        while let Some(ref cmd) = state_machine_rx.next().await {
-            let mut closed = Vec::new();
-            {
-                let mut s = subscribers.lock().unwrap();
-                for (i, tx) in s.iter_mut() {
-                    if tx.send(cmd.clone()).await.is_err() {
-                        closed.push(*i);
-                    };
-                }
-            }
-            {
-                let mut s = subscribers.lock().unwrap();
-                for i in closed {
-                    s.remove(&i);
-                }
-            }
-        }
+impl<Cmd> Stream for Raft<Cmd> {
+    type Item = Cmd;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.state_machine_rx.poll_next_unpin(cx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.state_machine_rx.size_hint()
     }
 }
