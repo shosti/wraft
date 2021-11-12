@@ -1,279 +1,256 @@
-// use crate::init::{ClusterInit, ClusterWaiting};
-// use crate::raft::{LogCmd, Raft};
-// use futures::stream::StreamExt;
-// use serde::{Deserialize, Serialize};
-// use std::collections::BTreeMap;
-// use wasm_bindgen_futures::spawn_local;
-// use yew::prelude::*;
+use crate::todo_state::{Entry, Filter, State};
+use strum::IntoEnumIterator;
+use yew::format::Json;
+use yew::services::storage::{Area, StorageService};
+use yew::web_sys::HtmlInputElement as InputElement;
+use yew::{classes, html, Component, ComponentLink, Html, InputData, NodeRef, ShouldRender};
+use yew::{events::KeyboardEvent, Classes};
 
-// const CLUSTER_SIZE: usize = 3;
+const KEY: &str = "yew.todomvc.self";
 
-// pub struct Model {
-//     state: State,
-//     link: ComponentLink<Self>,
-// }
+pub enum Msg {
+    Add,
+    Edit(usize),
+    Update(String),
+    UpdateEdit(String),
+    Remove(usize),
+    SetFilter(Filter),
+    ToggleAll,
+    ToggleEdit(usize),
+    Toggle(usize),
+    ClearCompleted,
+    Focus,
+}
 
-// enum State {
-//     Setup,
-//     Waiting { session_key: u128 },
-//     Running { todos: TodoList, new_todo: String },
-// }
+pub struct Model {
+    link: ComponentLink<Self>,
+    storage: StorageService,
+    state: State,
+    focus_ref: NodeRef,
+}
 
-// pub enum Msg {
-//     UpdateNewTodo(String),
-//     StartCluster(u128),
-//     ClusterStarted(TodoList),
-//     NewTodo,
-//     TodosUpdate(LogCmd<TodoItem>),
-//     ToggleTodo(String),
-//     DeleteTodo(String),
-// }
+impl Component for Model {
+    type Message = Msg;
+    type Properties = ();
 
-// #[derive(Serialize, Deserialize, Debug, Clone)]
-// enum TodoState {
-//     Todo,
-//     Done,
-// }
+    fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
+        let storage = StorageService::new(Area::Local).expect("storage was disabled by the user");
+        let entries = {
+            if let Json(Ok(restored_model)) = storage.restore(KEY) {
+                restored_model
+            } else {
+                Vec::new()
+            }
+        };
+        let state = State {
+            entries,
+            filter: Filter::All,
+            value: "".into(),
+            edit_value: "".into(),
+        };
+        let focus_ref = NodeRef::default();
+        Self {
+            link,
+            storage,
+            state,
+            focus_ref,
+        }
+    }
 
-// #[derive(Serialize, Deserialize, Debug, Clone)]
-// pub struct TodoItem {
-//     text: String,
-//     state: TodoState,
-// }
+    fn update(&mut self, msg: Self::Message) -> ShouldRender {
+        match msg {
+            Msg::Add => {
+                let description = self.state.value.trim();
+                if !description.is_empty() {
+                    let entry = Entry {
+                        description: description.to_string(),
+                        completed: false,
+                        editing: false,
+                    };
+                    self.state.entries.push(entry);
+                }
+                self.state.value = "".to_string();
+            }
+            Msg::Edit(idx) => {
+                let edit_value = self.state.edit_value.trim().to_string();
+                self.state.complete_edit(idx, edit_value);
+                self.state.edit_value = "".to_string();
+            }
+            Msg::Update(val) => {
+                println!("Input: {}", val);
+                self.state.value = val;
+            }
+            Msg::UpdateEdit(val) => {
+                println!("Input: {}", val);
+                self.state.edit_value = val;
+            }
+            Msg::Remove(idx) => {
+                self.state.remove(idx);
+            }
+            Msg::SetFilter(filter) => {
+                self.state.filter = filter;
+            }
+            Msg::ToggleEdit(idx) => {
+                self.state.edit_value = self.state.entries[idx].description.clone();
+                self.state.clear_all_edit();
+                self.state.toggle_edit(idx);
+            }
+            Msg::ToggleAll => {
+                let status = !self.state.is_all_completed();
+                self.state.toggle_all(status);
+            }
+            Msg::Toggle(idx) => {
+                self.state.toggle(idx);
+            }
+            Msg::ClearCompleted => {
+                self.state.clear_completed();
+            }
+            Msg::Focus => {
+                if let Some(input) = self.focus_ref.cast::<InputElement>() {
+                    input.focus().unwrap();
+                }
+            }
+        }
+        self.storage.store(KEY, Json(&self.state.entries));
+        true
+    }
 
-// pub struct TodoList {
-//     raft: Raft<TodoItem>,
-//     todos: BTreeMap<String, TodoItem>,
-//     link: ComponentLink<Model>,
-// }
+    fn change(&mut self, _: Self::Properties) -> ShouldRender {
+        false
+    }
 
-// impl Component for Model {
-//     type Message = Msg;
-//     type Properties = ();
+    fn view(&self) -> Html {
+        let hidden_class = if self.state.entries.is_empty() {
+            "hidden"
+        } else {
+            ""
+        };
+        html! {
+            <div class="todomvc-wrapper">
+                <section class="todoapp">
+                    <header class="header">
+                        <h1>{ "todos" }</h1>
+                        { self.view_input() }
+                    </header>
+                    <section class=classes!("main", hidden_class)>
+                        <input
+                            type="checkbox"
+                            class="toggle-all"
+                            id="toggle-all"
+                            checked=self.state.is_all_completed()
+                            onclick=self.link.callback(|_| Msg::ToggleAll)
+                        />
+                        <label for="toggle-all" />
+                        <ul class="todo-list">
+                            { for self.state.entries.iter().filter(|e| self.state.filter.fits(e)).enumerate().map(|e| self.view_entry(e)) }
+                        </ul>
+                    </section>
+                    <footer class=classes!("footer", hidden_class)>
+                        <span class="todo-count">
+                            <strong>{ self.state.total() }</strong>
+                            { " item(s) left" }
+                        </span>
+                        <ul class="filters">
+                            { for Filter::iter().map(|flt| self.view_filter(flt)) }
+                        </ul>
+                        <button class="clear-completed" onclick=self.link.callback(|_| Msg::ClearCompleted)>
+                            { format!("Clear completed ({})", self.state.total_completed()) }
+                        </button>
+                    </footer>
+                </section>
+                <footer class="info">
+                    <p>{ "Double-click to edit a todo" }</p>
+                    <p>{ "Written by " }<a href="https://github.com/DenisKolodin/" target="_blank">{ "Denis Kolodin" }</a></p>
+                    <p>{ "Part of " }<a href="http://todomvc.com/" target="_blank">{ "TodoMVC" }</a></p>
+                </footer>
+            </div>
+        }
+    }
+}
 
-//     fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
-//         Self {
-//             link,
-//             state: State::Setup,
-//         }
-//     }
+impl Model {
+    fn view_filter(&self, filter: Filter) -> Html {
+        let cls = if self.state.filter == filter {
+            "selected"
+        } else {
+            "not-selected"
+        };
+        html! {
+            <li>
+                <a class=cls
+                   href=filter.as_href()
+                   onclick=self.link.callback(move |_| Msg::SetFilter(filter))
+                >
+                    { filter }
+                </a>
+            </li>
+        }
+    }
 
-//     fn update(&mut self, msg: Self::Message) -> ShouldRender {
-//         match msg {
-//             Msg::StartCluster(session_key) => {
-//                 self.start_raft(session_key);
-//                 self.state = State::Waiting { session_key };
-//                 true
-//             }
-//             Msg::ClusterStarted(todos) => {
-//                 self.state = State::Running {
-//                     todos,
-//                     new_todo: "".into(),
-//                 };
-//                 true
-//             }
-//             Msg::TodosUpdate(cmd) => {
-//                 if let State::Running { todos, .. } = &mut self.state {
-//                     todos.update(cmd);
-//                     return true;
-//                 }
-//                 unreachable!();
-//             }
-//             Msg::ToggleTodo(todo_text) => {
-//                 if let State::Running { todos, .. } = &mut self.state {
-//                     todos.toggle(todo_text);
-//                     return true;
-//                 }
-//                 unreachable!();
-//             }
-//             Msg::UpdateNewTodo(todo_text) => match &mut self.state {
-//                 State::Running { new_todo, .. } => {
-//                     *new_todo = todo_text;
-//                     true
-//                 }
-//                 _ => unreachable!(),
-//             },
-//             Msg::NewTodo => match &mut self.state {
-//                 State::Running { todos, new_todo } => {
-//                     todos.add(new_todo.to_string());
-//                     *new_todo = "".into();
-//                     true
-//                 }
-//                 _ => unreachable!(),
-//             },
-//             Msg::DeleteTodo(todo_text) => {
-//                 if let State::Running { todos, .. } = &mut self.state {
-//                     todos.delete(todo_text);
-//                     return true;
-//                 }
-//                 unreachable!();
-//             }
-//         }
-//     }
+    fn view_input(&self) -> Html {
+        html! {
+            // You can use standard Rust comments. One line:
+            // <li></li>
+            <input
+                class="new-todo"
+                placeholder="What needs to be done?"
+                value=self.state.value.clone()
+                oninput=self.link.callback(|e: InputData| Msg::Update(e.value))
+                onkeypress=self.link.batch_callback(|e: KeyboardEvent| {
+                    if e.key() == "Enter" { Some(Msg::Add) } else { None }
+                })
+            />
+            /* Or multiline:
+            <ul>
+                <li></li>
+            </ul>
+            */
+        }
+    }
 
-//     fn change(&mut self, _props: Self::Properties) -> ShouldRender {
-//         false
-//     }
+    fn view_entry(&self, (idx, entry): (usize, &Entry)) -> Html {
+        let mut class = Classes::from("todo");
+        if entry.editing {
+            class.push(" editing");
+        }
+        if entry.completed {
+            class.push(" completed");
+        }
+        html! {
+            <li class=class>
+                <div class="view">
+                    <input
+                        type="checkbox"
+                        class="toggle"
+                        checked=entry.completed
+                        onclick=self.link.callback(move |_| Msg::Toggle(idx))
+                    />
+                    <label ondblclick=self.link.callback(move |_| Msg::ToggleEdit(idx))>{ &entry.description }</label>
+                    <button class="destroy" onclick=self.link.callback(move |_| Msg::Remove(idx)) />
+                </div>
+                { self.view_entry_edit_input((idx, entry)) }
+            </li>
+        }
+    }
 
-//     fn view(&self) -> Html {
-//         match &self.state {
-//             State::Setup => self.render_setup(),
-//             State::Waiting { session_key } => self.render_waiting(*session_key),
-//             State::Running { todos, new_todo } => todos.render(new_todo.clone()),
-//         }
-//     }
-// }
-
-// impl Model {
-//     fn render_setup(&self) -> Html {
-//         let onstart = self.link.callback(Msg::StartCluster);
-//         html! {
-//             <ClusterInit onstart=onstart />
-//         }
-//     }
-
-//     fn render_waiting(&self, session_key: u128) -> Html {
-//         html! {
-//             <ClusterWaiting session_key=session_key />
-//         }
-//     }
-
-//     fn hostname() -> String {
-//         web_sys::window()
-//             .expect("no global window")
-//             .location()
-//             .hostname()
-//             .unwrap()
-//     }
-
-//     fn start_raft(&self, session_id: u128) {
-//         let link = self.link.clone();
-//         spawn_local(async move {
-//             let hostname = Self::hostname();
-//             let raft = Raft::start(&hostname, session_id, CLUSTER_SIZE)
-//                 .await
-//                 .unwrap();
-//             let todos = TodoList::new(raft, link.clone()).await;
-//             link.send_message(Msg::ClusterStarted(todos));
-//         });
-//     }
-// }
-
-// impl TodoList {
-//     pub async fn new(raft: Raft<TodoItem>, link: ComponentLink<Model>) -> Self {
-//         let todos = raft
-//             .get_current_state()
-//             .await
-//             .unwrap()
-//             .iter()
-//             .map(|(k, v)| (k.clone(), v.clone()))
-//             .collect();
-//         let mut rx = raft.subscribe();
-//         let l = link.clone();
-//         spawn_local(async move {
-//             while let Some(cmd) = rx.next().await {
-//                 l.send_message(Msg::TodosUpdate(cmd));
-//             }
-//         });
-//         Self { raft, todos, link }
-//     }
-
-//     pub fn render(&self, new_todo: String) -> Html {
-//         html! {
-//             <>
-//             <h1>{ "TODO" }</h1>
-//             <div>
-//             <ul>
-//             {
-//                 self.todos
-//                     .iter()
-//                     .map(|(_, todo)| todo.render(&self.link))
-//                     .collect::<Html>()
-//             }
-//             </ul>
-//                 <input
-//                 type="text"
-//                 value=new_todo
-//                 oninput=self.link.callback(|e: InputData| Msg::UpdateNewTodo(e.value))
-//                 onkeypress=self.link.batch_callback(move |e: KeyboardEvent| {
-//                     if e.key() == "Enter" { Some(Msg::NewTodo) } else { None }
-//                 })
-//                 />
-//                 </div>
-//                 </>
-//         }
-//     }
-
-//     pub fn update(&mut self, cmd: LogCmd<TodoItem>) {
-//         match cmd {
-//             LogCmd::Set { key, data } => {
-//                 self.todos.insert(key, data);
-//             }
-//             LogCmd::Delete { ref key } => {
-//                 self.todos.remove(key);
-//             }
-//         }
-//     }
-
-//     pub fn toggle(&self, todo_text: String) {
-//         let old = self.todos.get(&todo_text).unwrap();
-//         let todo = TodoItem {
-//             text: todo_text.clone(),
-//             state: if let TodoState::Done = old.state {
-//                 TodoState::Todo
-//             } else {
-//                 TodoState::Done
-//             },
-//         };
-//         let raft = self.raft.clone();
-//         spawn_local(async move {
-//             raft.set(todo_text, todo).await.unwrap();
-//         });
-//     }
-
-//     pub fn add(&self, todo_text: String) {
-//         let todo = TodoItem {
-//             text: todo_text.clone(),
-//             state: TodoState::Todo,
-//         };
-//         let raft = self.raft.clone();
-//         spawn_local(async move {
-//             raft.set(todo_text, todo).await.unwrap();
-//         });
-//     }
-
-//     pub fn delete(&self, todo_text: String) {
-//         let raft = self.raft.clone();
-//         spawn_local(async move {
-//             raft.delete(todo_text).await.unwrap();
-//         });
-//     }
-// }
-
-// impl TodoItem {
-//     pub fn render(&self, link: &ComponentLink<Model>) -> Html {
-//         let t = self.text.clone();
-//         let delete = link.callback(move |_| Msg::DeleteTodo(t.to_string()));
-//         let t2 = self.text.clone();
-//         let toggle = link.callback(move |_| Msg::ToggleTodo(t2.to_string()));
-
-//         match self.state {
-//             TodoState::Todo => html! {
-//                 <>
-//                     <li>
-//                     <span onclick=toggle>{&self.text}</span>
-//                     <span onclick=delete>{ " 🗑" }</span>
-//                     </li>
-//                     </>
-//             },
-//             TodoState::Done => html! {
-//                 <>
-//                     <li>
-//                     <span onclick=toggle><del>{&self.text}</del></span>
-//                     <span onclick=delete>{ " 🗑" }</span>
-//                     </li>
-//                     </>
-//             },
-//         }
-//     }
-// }
+    fn view_entry_edit_input(&self, (idx, entry): (usize, &Entry)) -> Html {
+        if entry.editing {
+            html! {
+                <input
+                    class="edit"
+                    type="text"
+                    ref=self.focus_ref.clone()
+                    value=self.state.edit_value.clone()
+                    onmouseover=self.link.callback(|_| Msg::Focus)
+                    oninput=self.link.callback(|e: InputData| Msg::UpdateEdit(e.value))
+                    onblur=self.link.callback(move |_| Msg::Edit(idx))
+                    onkeypress=self.link.batch_callback(move |e: KeyboardEvent| {
+                        if e.key() == "Enter" { Some(Msg::Edit(idx)) } else { None }
+                    })
+                />
+            }
+        } else {
+            html! { <input type="hidden" /> }
+        }
+    }
+}
