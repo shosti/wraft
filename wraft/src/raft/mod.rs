@@ -1,3 +1,4 @@
+pub mod client;
 pub mod errors;
 mod rpc_server;
 mod storage;
@@ -5,7 +6,6 @@ mod worker;
 
 use self::worker::WorkerBuilder;
 use crate::console_log;
-use crate::util::sleep;
 use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
 use base64::write::EncoderStringWriter;
@@ -13,9 +13,8 @@ use errors::{ClientError, Error};
 use futures::channel::mpsc::unbounded;
 use futures::channel::mpsc::{channel, Sender, UnboundedReceiver};
 use futures::channel::oneshot;
-use futures::sink::SinkExt;
 use futures::stream::StreamExt;
-use futures::{select, Stream};
+use futures::Stream;
 use rpc_server::RpcServer;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -24,7 +23,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
-use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
 
 pub type LogIndex = u64;
@@ -110,8 +108,6 @@ pub struct LogEntry<Cmd> {
     pub idx: LogIndex,
 }
 
-const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RaftStateDump {
     state: String,
@@ -195,41 +191,8 @@ where
         })
     }
 
-    pub async fn send(&self, val: Cmd) -> Result<(), ClientError> {
-        let req = ClientRequest::Apply(val);
-        self.do_client_request(req).await.map(|_| ())
-    }
-
-    pub async fn debug(&self) -> Result<Box<RaftStateDump>, ClientError> {
-        let req = ClientRequest::Debug;
-        match self.do_client_request(req).await {
-            Ok(ClientResponse::Debug(debug)) => Ok(debug),
-            Err(err) => Err(err),
-            _ => unreachable!(),
-        }
-    }
-
-    async fn do_client_request(
-        &self,
-        req: ClientRequest<Cmd>,
-    ) -> Result<ClientResponse<Cmd>, ClientError> {
-        let (resp_tx, mut resp_rx) = oneshot::channel();
-        let mut tx = self.client_tx.clone();
-        tx.send((req, resp_tx))
-            .await
-            .map_err(|_| ClientError::Unavailable)?;
-        select! {
-            res = resp_rx => {
-                match res {
-                    Ok(Ok(resp)) => Ok(resp),
-                    Ok(Err(err)) => Err(err),
-                    Err(_) => Err(ClientError::Unavailable),
-                }
-            }
-            _ = sleep(Duration::from_millis(CLIENT_REQUEST_TIMEOUT_MILLIS)) => {
-                Err(ClientError::Timeout)
-            }
-        }
+    pub fn client(&self) -> client::Client<Cmd> {
+        client::Client::new(self.client_tx.clone())
     }
 
     fn generate_node_id(hostname: &str, session_key: u128) -> NodeId {
