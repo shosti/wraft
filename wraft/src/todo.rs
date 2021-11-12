@@ -3,13 +3,9 @@ use crate::raft_init::{self, RaftProps};
 use crate::todo_state::{Entry, Filter, State};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use yew::format::Json;
-use yew::services::storage::{Area, StorageService};
 use yew::web_sys::HtmlInputElement as InputElement;
 use yew::{classes, html, Component, ComponentLink, Html, InputData, NodeRef, ShouldRender};
 use yew::{events::KeyboardEvent, Classes};
-
-const KEY: &str = "yew.todomvc.self";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Msg {
@@ -30,7 +26,6 @@ impl Command for Msg {}
 
 pub struct Model {
     link: ComponentLink<Self>,
-    storage: StorageService,
     state: State,
     focus_ref: NodeRef,
     raft: Raft<Msg>,
@@ -43,14 +38,7 @@ impl Component for Model {
     type Properties = RaftProps<Msg>;
 
     fn create(props: Self::Properties, link: ComponentLink<Self>) -> Self {
-        let storage = StorageService::new(Area::Local).expect("storage was disabled by the user");
-        let entries = {
-            if let Json(Ok(restored_model)) = storage.restore(KEY) {
-                restored_model
-            } else {
-                Vec::new()
-            }
-        };
+        let entries = Vec::new();
         let state = State {
             entries,
             filter: Filter::All,
@@ -60,7 +48,6 @@ impl Component for Model {
         let focus_ref = NodeRef::default();
         Self {
             link,
-            storage,
             state,
             focus_ref,
             raft: props.raft.take().unwrap(),
@@ -121,7 +108,6 @@ impl Component for Model {
                 }
             }
         }
-        self.storage.store(KEY, Json(&self.state.entries));
         true
     }
 
