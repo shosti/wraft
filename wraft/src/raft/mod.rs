@@ -131,7 +131,7 @@ pub struct RaftStateDump {
 
 impl<Cmd> Raft<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     pub async fn start(
         hostname: &str,

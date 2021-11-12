@@ -55,11 +55,21 @@ pub struct Server<Req, Resp> {
     _onclose_cb: Option<Closure<dyn FnMut()>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Client<Req, Resp> {
     node_id: u64,
     connected: Arc<AtomicBool>,
     req_tx: Sender<RequestMessage<Req, Resp>>,
+}
+
+impl<Req, Resp> Clone for Client<Req, Resp> {
+    fn clone(&self) -> Self {
+        Self {
+            node_id: self.node_id,
+            connected: self.connected.clone(),
+            req_tx: self.req_tx.clone(),
+        }
+    }
 }
 
 struct RequestManager<Req, Resp> {

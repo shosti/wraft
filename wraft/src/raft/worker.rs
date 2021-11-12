@@ -87,7 +87,7 @@ struct RaftWorkerInner<Cmd> {
 
 impl<Cmd> RaftWorkerState<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     async fn next(self) -> Self {
         match self {
@@ -111,7 +111,7 @@ pub struct WorkerBuilder<Cmd> {
 
 impl<Cmd> WorkerBuilder<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     pub fn start(self) -> Sender<ClientMessage<Cmd>> {
         let (client_tx, client_rx) = channel(100);
@@ -149,7 +149,7 @@ where
 impl<S, Cmd> RaftWorker<S, Cmd>
 where
     S: std::fmt::Debug,
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     fn election_timeout(&self) -> Sleep {
         let delay = thread_rng().gen_range(1000..1500);
@@ -253,7 +253,7 @@ where
 
 impl<Cmd> RaftWorker<Follower, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     pub fn new(inner: RaftWorkerInner<Cmd>) -> Self {
         Self {
@@ -359,7 +359,7 @@ where
 
 impl<Cmd> RaftWorker<Candidate, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     async fn next(mut self) -> RaftWorkerState<Cmd> {
         console_log!("BEING A CANDIDATE");
@@ -454,12 +454,6 @@ where
 
     fn request_votes(&self) -> Receiver<()> {
         let (votes_tx, votes_rx) = channel(self.inner.cluster_size);
-        let req = RpcRequest::RequestVote(RequestVoteRequest {
-            term: self.inner.storage.current_term(),
-            candidate: self.inner.node_id,
-            last_log_index: self.inner.storage.last_log_index(),
-            last_log_term: self.inner.storage.last_log_term(),
-        });
         for client in self
             .inner
             .peer_clients
@@ -468,9 +462,14 @@ where
         {
             let mut c = client.clone();
             let mut tx = votes_tx.clone();
-            let r = req.clone();
+            let req = RpcRequest::RequestVote(RequestVoteRequest {
+                term: self.inner.storage.current_term(),
+                candidate: self.inner.node_id,
+                last_log_index: self.inner.storage.last_log_index(),
+                last_log_term: self.inner.storage.last_log_term(),
+            });
             spawn_local(async move {
-                match c.call(r).await {
+                match c.call(req).await {
                     Ok(RpcResponse::RequestVote(resp)) if resp.vote_granted => {
                         // If channel is closed, the election is probably over so ignore
                         // the error
@@ -495,7 +494,7 @@ where
 
 impl<Cmd> RaftWorker<Leader<Cmd>, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     async fn next(mut self) -> RaftWorkerState<Cmd> {
         console_log!("BEING A LEADER");
@@ -772,7 +771,7 @@ impl<Cmd> From<RaftWorker<Follower, Cmd>> for RaftWorker<Candidate, Cmd> {
 
 impl<Cmd> From<RaftWorker<Candidate, Cmd>> for RaftWorker<Leader<Cmd>, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     fn from(from: RaftWorker<Candidate, Cmd>) -> Self {
         let next_indices = from
@@ -802,7 +801,7 @@ where
 impl<S, T> From<&RaftWorker<S, T>> for RaftStateDump
 where
     S: std::fmt::Debug,
-    T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
+    T: Serialize + DeserializeOwned + Debug + Send + 'static,
 {
     fn from(from: &RaftWorker<S, T>) -> Self {
         Self {

@@ -20,6 +20,14 @@ where
     }
 }
 
+impl<Cmd> Clone for RpcServer<Cmd> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+        }
+    }
+}
+
 #[async_trait]
 impl<Cmd> RequestHandler<RpcRequest<Cmd>, RpcResponse<Cmd>> for RpcServer<Cmd>
 where

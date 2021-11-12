@@ -21,7 +21,7 @@ pub struct Storage<Cmd> {
 
 impl<Cmd> Storage<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Clone + Debug + 'static,
+    Cmd: Serialize + DeserializeOwned + Debug + 'static,
 {
     pub fn new(session_key: u128) -> Self {
         let window = web_sys::window().expect("no global window");
