@@ -62,10 +62,8 @@ pub enum RpcResponse<T> {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientRequest<T> {
-    Get(String),
     Set(String, T),
     Delete(String),
-    GetCurrentState,
     Debug,
 }
 
@@ -74,7 +72,7 @@ pub enum ClientResponse<T> {
     Ack,
     Get(Option<T>),
     GetCurrentState(HashMap<String, T>),
-    Debug(Box<RaftStateDump<T>>),
+    Debug(Box<RaftStateDump>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -123,7 +121,7 @@ pub enum LogCmd<T> {
 const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RaftStateDump<T> {
+pub struct RaftStateDump {
     state: String,
     leader_id: Option<NodeId>,
     node_id: NodeId,
@@ -137,7 +135,6 @@ pub struct RaftStateDump<T> {
 
     commit_index: LogIndex,
     last_applied: LogIndex,
-    current_state: HashMap<String, T>,
 }
 
 impl<T> Raft<T>
@@ -221,15 +218,6 @@ where
         rx
     }
 
-    pub async fn get(&self, key: String) -> Result<Option<T>, ClientError> {
-        let req = ClientRequest::Get(key);
-        match self.do_client_request(req).await {
-            Ok(ClientResponse::Get(val)) => Ok(val),
-            Err(err) => Err(err),
-            _ => unreachable!(),
-        }
-    }
-
     pub async fn set(&self, key: String, val: T) -> Result<(), ClientError> {
         let req = ClientRequest::Set(key, val);
         self.do_client_request(req).await.map(|_| ())
@@ -240,16 +228,7 @@ where
         self.do_client_request(req).await.map(|_| ())
     }
 
-    pub async fn get_current_state(&self) -> Result<HashMap<String, T>, ClientError> {
-        let req = ClientRequest::GetCurrentState;
-        match self.do_client_request(req).await {
-            Ok(ClientResponse::GetCurrentState(state)) => Ok(state),
-            Err(err) => Err(err),
-            _ => unreachable!(),
-        }
-    }
-
-    pub async fn debug(&self) -> Result<Box<RaftStateDump<T>>, ClientError> {
+    pub async fn debug(&self) -> Result<Box<RaftStateDump>, ClientError> {
         let req = ClientRequest::Debug;
         match self.do_client_request(req).await {
             Ok(ClientResponse::Debug(debug)) => Ok(debug),

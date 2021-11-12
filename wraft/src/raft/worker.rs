@@ -69,7 +69,6 @@ struct RaftWorkerInner<T> {
     rpc_rx: Receiver<RpcMessage<T>>,
     rpc_server: RpcServer<T>,
     peers_rx: Receiver<PeerTransport>,
-    current_state: HashMap<String, T>,
     state_machine_tx: UnboundedSender<LogCmd<T>>,
 
     // Peers is constant throughout the runtime (regardless of whether they're
@@ -132,7 +131,6 @@ where
             peers_rx: self.peers_rx,
             rpc_server: self.rpc_server,
             state_machine_tx: self.state_machine_tx,
-            current_state: HashMap::new(),
             commit_index: 0,
             last_applied: 0,
         };
@@ -226,26 +224,12 @@ where
         let _ = tx.send(Ok(ClientResponse::Debug(Box::new(self.into()))));
     }
 
-    fn handle_get_current_state(&self, tx: oneshot::Sender<ClientResult<T>>) {
-        let _ = tx.send(Ok(ClientResponse::GetCurrentState(
-            self.inner.current_state.clone(),
-        )));
-    }
-
     fn apply_log(&mut self) {
         for entry in self
             .inner
             .storage
             .sublog((self.inner.last_applied + 1)..=self.inner.commit_index)
         {
-            match entry.cmd.clone() {
-                LogCmd::Set { key, data } => {
-                    self.inner.current_state.insert(key, data);
-                }
-                LogCmd::Delete { ref key } => {
-                    self.inner.current_state.remove(key);
-                }
-            }
             self.inner.last_applied = entry.idx;
             self.inner
                 .state_machine_tx
@@ -293,7 +277,6 @@ where
                     let (req, resp_tx) = res.expect("Client channel closed");
                     match req {
                         ClientRequest::Debug => self.handle_debug(resp_tx),
-                        ClientRequest::GetCurrentState => self.handle_get_current_state(resp_tx),
                         _ => self.forward_client_request(req, resp_tx),
                     }
                 }
@@ -408,7 +391,6 @@ where
                     let (req, resp_tx) = res.expect("Client channel closed");
                     match req {
                         ClientRequest::Debug => self.handle_debug(resp_tx),
-                        ClientRequest::GetCurrentState => self.handle_get_current_state(resp_tx),
                         _ => {
                             let _ = resp_tx.send(Err(ClientError::Unavailable));
                         }
@@ -731,7 +713,6 @@ where
         heartbeat: &mut Sleep,
     ) {
         match req {
-            ClientRequest::Get(ref key) => self.handle_get_request(key, resp_tx),
             ClientRequest::Set(ref key, val) => {
                 self.handle_set_request(key, val, resp_tx);
                 // Reset the heartbeat since we presumably contacted all peers
@@ -739,18 +720,7 @@ where
             }
             ClientRequest::Delete(ref key) => self.handle_delete_request(key, resp_tx),
             ClientRequest::Debug => self.handle_debug(resp_tx),
-            ClientRequest::GetCurrentState => self.handle_get_current_state(resp_tx),
         }
-    }
-
-    fn handle_get_request(
-        &self,
-        key: &str,
-        client_resp_tx: oneshot::Sender<Result<ClientResponse<T>, ClientError>>,
-    ) {
-        let val = self.inner.current_state.get(key).cloned();
-        let resp = ClientResponse::Get(val);
-        let _ = client_resp_tx.send(Ok(resp));
     }
 
     fn handle_set_request(&mut self, key: &str, val: T, resp_tx: oneshot::Sender<ClientResult<T>>) {
@@ -845,7 +815,7 @@ where
     }
 }
 
-impl<S, T> From<&RaftWorker<S, T>> for RaftStateDump<T>
+impl<S, T> From<&RaftWorker<S, T>> for RaftStateDump
 where
     S: std::fmt::Debug,
     T: Serialize + DeserializeOwned + Clone + Debug + Send + 'static,
@@ -871,8 +841,6 @@ where
 
             commit_index: from.inner.commit_index,
             last_applied: from.inner.last_applied,
-            // TODO: This is way too expensive
-            current_state: from.inner.current_state.clone(),
         }
     }
 }
