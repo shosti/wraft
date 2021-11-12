@@ -6,26 +6,26 @@ use futures::channel::oneshot;
 use futures::SinkExt;
 use std::marker::Send;
 
-#[derive(Clone, Debug)]
-pub struct RpcServer<T> {
-    tx: Sender<RpcMessage<T>>,
+#[derive(Debug)]
+pub struct RpcServer<Cmd> {
+    tx: Sender<RpcMessage<Cmd>>,
 }
 
-impl<T> RpcServer<T>
+impl<Cmd> RpcServer<Cmd>
 where
-    T: Send,
+    Cmd: Send,
 {
-    pub fn new(tx: Sender<RpcMessage<T>>) -> Self {
+    pub fn new(tx: Sender<RpcMessage<Cmd>>) -> Self {
         Self { tx }
     }
 }
 
 #[async_trait]
-impl<T> RequestHandler<RpcRequest<T>, RpcResponse<T>> for RpcServer<T>
+impl<Cmd> RequestHandler<RpcRequest<Cmd>, RpcResponse<Cmd>> for RpcServer<Cmd>
 where
-    T: Send,
+    Cmd: Send,
 {
-    async fn handle(&self, req: RpcRequest<T>) -> Result<RpcResponse<T>, transport::Error> {
+    async fn handle(&self, req: RpcRequest<Cmd>) -> Result<RpcResponse<Cmd>, transport::Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
             .clone()

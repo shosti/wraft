@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::marker::PhantomData;
 
 #[derive(Debug)]
-pub struct Storage<T> {
+pub struct Storage<Cmd> {
     session_key: u128,
     last_log_index: LogIndex,
     last_log_index_key: String,
@@ -16,12 +16,12 @@ pub struct Storage<T> {
     voted_for: Option<NodeId>,
     voted_for_key: String,
     storage: web_sys::Storage,
-    _record_type: PhantomData<T>,
+    _record_type: PhantomData<Cmd>,
 }
 
-impl<T> Storage<T>
+impl<Cmd> Storage<Cmd>
 where
-    T: Serialize + DeserializeOwned + Clone + Debug + 'static,
+    Cmd: Serialize + DeserializeOwned + Clone + Debug + 'static,
 {
     pub fn new(session_key: u128) -> Self {
         let window = web_sys::window().expect("no global window");
@@ -94,7 +94,7 @@ where
     }
 
     // This explodes if you use it wrong!
-    pub fn append_log(&mut self, entry: &LogEntry<T>) {
+    pub fn append_log(&mut self, entry: &LogEntry<Cmd>) {
         let idx = self.increment_last_log_index();
         assert_eq!(idx, entry.idx);
 
@@ -107,14 +107,14 @@ where
 
     // Sets log entry at entry.idx and truncates the log from then on out
     // (assuming all following logs are invalid)
-    pub fn overwrite_log(&mut self, entry: &LogEntry<T>) {
+    pub fn overwrite_log(&mut self, entry: &LogEntry<Cmd>) {
         assert!(entry.idx >= self.last_log_index());
         assert!(entry.idx != 0);
         self.set_last_log_index(entry.idx - 1);
         self.append_log(entry);
     }
 
-    pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry<T>> {
+    pub fn get_log(&self, idx: LogIndex) -> Option<LogEntry<Cmd>> {
         // log indices start at 1, as per the paper
         if idx == 0 || idx > self.last_log_index() {
             return None;
@@ -122,11 +122,11 @@ where
         let key = self.log_key(idx);
         let mut data = Cursor::new(self.storage.get_item(&key).unwrap().unwrap()); // Christmas!
         let buf = base64::read::DecoderReader::new(&mut data, base64::STANDARD);
-        let entry: LogEntry<T> = bincode::deserialize_from(buf).unwrap();
+        let entry: LogEntry<Cmd> = bincode::deserialize_from(buf).unwrap();
         Some(entry)
     }
 
-    pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry<T>> {
+    pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry<Cmd>> {
         indices
             .map(|i| self.get_log(i))
             .filter(|e| e.is_some())
