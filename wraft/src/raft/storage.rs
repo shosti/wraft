@@ -1,7 +1,5 @@
-use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex};
+use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex, Command};
 use base64::write::EncoderStringWriter;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::marker::PhantomData;
@@ -21,7 +19,7 @@ pub struct Storage<Cmd> {
 
 impl<Cmd> Storage<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + 'static,
+    Cmd: Command,
 {
     pub fn new(session_key: u128) -> Self {
         let window = web_sys::window().expect("no global window");

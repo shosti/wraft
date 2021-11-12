@@ -3,7 +3,7 @@ use crate::raft::rpc_server::RpcServer;
 use crate::raft::storage::Storage;
 use crate::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientError, ClientMessage, ClientRequest,
-    ClientResponse, LogEntry, LogIndex, NodeId, RaftStateDump, RequestVoteRequest,
+    ClientResponse, Command, LogEntry, LogIndex, NodeId, RaftStateDump, RequestVoteRequest,
     RequestVoteResponse, RpcMessage, RpcRequest, RpcResponse,
 };
 use crate::util::{sleep, Sleep};
@@ -14,8 +14,6 @@ use futures::select;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use rand::{thread_rng, Rng};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -87,7 +85,7 @@ struct RaftWorkerInner<Cmd> {
 
 impl<Cmd> RaftWorkerState<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     async fn next(self) -> Self {
         match self {
@@ -111,7 +109,7 @@ pub struct WorkerBuilder<Cmd> {
 
 impl<Cmd> WorkerBuilder<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     pub fn start(self) -> Sender<ClientMessage<Cmd>> {
         let (client_tx, client_rx) = channel(100);
@@ -149,7 +147,7 @@ where
 impl<S, Cmd> RaftWorker<S, Cmd>
 where
     S: std::fmt::Debug,
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     fn election_timeout(&self) -> Sleep {
         let delay = thread_rng().gen_range(1000..1500);
@@ -253,7 +251,7 @@ where
 
 impl<Cmd> RaftWorker<Follower, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     pub fn new(inner: RaftWorkerInner<Cmd>) -> Self {
         Self {
@@ -359,7 +357,7 @@ where
 
 impl<Cmd> RaftWorker<Candidate, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     async fn next(mut self) -> RaftWorkerState<Cmd> {
         console_log!("BEING A CANDIDATE");
@@ -494,7 +492,7 @@ where
 
 impl<Cmd> RaftWorker<Leader<Cmd>, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     async fn next(mut self) -> RaftWorkerState<Cmd> {
         console_log!("BEING A LEADER");
@@ -771,7 +769,7 @@ impl<Cmd> From<RaftWorker<Follower, Cmd>> for RaftWorker<Candidate, Cmd> {
 
 impl<Cmd> From<RaftWorker<Candidate, Cmd>> for RaftWorker<Leader<Cmd>, Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
     fn from(from: RaftWorker<Candidate, Cmd>) -> Self {
         let next_indices = from
@@ -798,12 +796,12 @@ where
     }
 }
 
-impl<S, T> From<&RaftWorker<S, T>> for RaftStateDump
+impl<S, Cmd> From<&RaftWorker<S, Cmd>> for RaftStateDump
 where
     S: std::fmt::Debug,
-    T: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command,
 {
-    fn from(from: &RaftWorker<S, T>) -> Self {
+    fn from(from: &RaftWorker<S, Cmd>) -> Self {
         Self {
             state: format!("{:?}", from.state),
             leader_id: from.inner.leader_id,

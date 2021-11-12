@@ -127,7 +127,7 @@ pub struct RaftStateDump {
 
 impl<Cmd> Raft<Cmd>
 where
-    Cmd: Serialize + DeserializeOwned + Debug + Send + 'static,
+    Cmd: Command
 {
     pub async fn start(
         hostname: &str,
@@ -247,3 +247,5 @@ impl<Cmd> Stream for Raft<Cmd> {
         self.state_machine_rx.size_hint()
     }
 }
+
+pub trait Command: Serialize + DeserializeOwned + Debug + Send + 'static {}
