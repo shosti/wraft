@@ -65,7 +65,7 @@ impl Component for ClusterInit {
                     .clear()
                     .unwrap();
                 false
-            },
+            }
         }
     }
 

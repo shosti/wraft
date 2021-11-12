@@ -15,10 +15,10 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[derive(Switch, Debug, Clone)]
 pub enum Route {
-    #[to = "/todo"]
-    Todo,
-    #[to = "/bench"]
-    Benchmark,
+    // #[to = "/todo"]
+    // Todo,
+    // #[to = "/bench"]
+    // Benchmark,
     #[to = "/"]
     Home,
 }
@@ -50,17 +50,17 @@ impl Component for Model {
                             <>
                                 <h1>{ "Try out WRaft!" }</h1>
                                 <ul>
-                                <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
-                                <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
+                                // <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
+                                // <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
                                 </ul>
                                 </>
                         },
-                        Route::Todo => html! {
-                            <todo::Model />
-                        },
-                        Route::Benchmark => html! {
-                            <benchmark::Model />
-                        },
+                        // Route::Todo => html! {
+                        //     <todo::Model />
+                        // },
+                        // Route::Benchmark => html! {
+                        //     <benchmark::Model />
+                        // },
                     }
                 })
                 />
