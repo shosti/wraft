@@ -2,6 +2,7 @@ pub mod raft;
 pub mod todo_state;
 pub mod raft_init;
 use yew::prelude::*;
+use todo::Todo;
 use yew_router::prelude::*;
 pub mod ringbuf;
 pub mod util;
@@ -17,8 +18,8 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[derive(Switch, Debug, Clone)]
 pub enum Route {
-    // #[to = "/todo"]
-    // Todo,
+    #[to = "/todo"]
+    Todo,
     // #[to = "/bench"]
     // Benchmark,
     #[to = "/"]
@@ -52,14 +53,14 @@ impl Component for Model {
                             <>
                                 <h1>{ "Try out WRaft!" }</h1>
                                 <ul>
-                                // <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
+                                <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
                                 // <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
                                 </ul>
                                 </>
                         },
-                        // Route::Todo => html! {
-                        //     <todo::Model />
-                        // },
+                        Route::Todo => html! {
+                            <Todo />
+                        },
                         // Route::Benchmark => html! {
                         //     <benchmark::Model />
                         // },

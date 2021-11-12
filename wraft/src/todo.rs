@@ -1,4 +1,7 @@
+use crate::raft::{Command, Raft};
+use crate::raft_init::{self, RaftProps};
 use crate::todo_state::{Entry, Filter, State};
+use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use yew::format::Json;
 use yew::services::storage::{Area, StorageService};
@@ -8,6 +11,7 @@ use yew::{events::KeyboardEvent, Classes};
 
 const KEY: &str = "yew.todomvc.self";
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Msg {
     Add,
     Edit(usize),
@@ -22,18 +26,23 @@ pub enum Msg {
     Focus,
 }
 
+impl Command for Msg {}
+
 pub struct Model {
     link: ComponentLink<Self>,
     storage: StorageService,
     state: State,
     focus_ref: NodeRef,
+    raft: Raft<Msg>,
 }
+
+pub type Todo = raft_init::Model<Model, Msg>;
 
 impl Component for Model {
     type Message = Msg;
-    type Properties = ();
+    type Properties = RaftProps<Msg>;
 
-    fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
+    fn create(props: Self::Properties, link: ComponentLink<Self>) -> Self {
         let storage = StorageService::new(Area::Local).expect("storage was disabled by the user");
         let entries = {
             if let Json(Ok(restored_model)) = storage.restore(KEY) {
@@ -54,6 +63,7 @@ impl Component for Model {
             storage,
             state,
             focus_ref,
+            raft: props.raft.take().unwrap(),
         }
     }
 
