@@ -38,7 +38,6 @@ struct RaftWorker<S, Cmd> {
 struct Follower {}
 #[derive(Debug)]
 struct Candidate {}
-#[derive(Debug)]
 struct Leader<Cmd> {
     next_indices: HashMap<NodeId, LogIndex>,
     match_indices: HashMap<NodeId, LogIndex>,
@@ -46,6 +45,16 @@ struct Leader<Cmd> {
     in_flight_peers: HashSet<NodeId>,
     responses_tx: Sender<InFlightResponse<Cmd>>,
     responses_rx: Option<Receiver<InFlightResponse<Cmd>>>,
+}
+
+impl<Cmd> Debug for Leader<Cmd> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Leader")
+            .field("next_indices", &self.next_indices)
+            .field("match_indices", &self.match_indices)
+            .field("in_flight_peers", &self.in_flight_peers)
+            .finish()
+    }
 }
 
 type RpcClient<Cmd> = Client<RpcRequest<Cmd>, RpcResponse<Cmd>>;
