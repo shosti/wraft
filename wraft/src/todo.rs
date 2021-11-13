@@ -1,13 +1,18 @@
+use crate::console_log;
 use crate::raft::client::Client;
 use crate::raft::{Command, Raft};
 use crate::raft_init::{self, RaftProps};
 use crate::todo_state::{Entry, Filter, State};
+use crate::util::sleep;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use strum::IntoEnumIterator;
 use wasm_bindgen_futures::spawn_local;
 use yew::web_sys::HtmlInputElement as InputElement;
-use yew::{classes, html, Component, ComponentLink, Html, InputData, NodeRef, ShouldRender, Callback};
+use yew::{
+    classes, html, Callback, Component, ComponentLink, Html, InputData, NodeRef, ShouldRender,
+};
 use yew::{events::KeyboardEvent, Classes};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -29,6 +34,7 @@ impl Command for Msg {}
 
 pub struct Model {
     state: State,
+    link: ComponentLink<Self>,
     focus_ref: NodeRef,
     raft_client: Client<Msg>,
 }
@@ -51,9 +57,10 @@ impl Component for Model {
         let raft = props.raft.take().unwrap();
         let raft_client = raft.client();
 
-        Self::run_raft(raft, link);
+        Self::run_raft(raft, link.clone());
         Self {
             state,
+            link,
             focus_ref,
             raft_client,
         }
@@ -79,11 +86,11 @@ impl Component for Model {
                 self.state.edit_value = "".to_string();
             }
             Msg::Update(val) => {
-                println!("Input: {}", val);
+                console_log!("Input: {}", val);
                 self.state.value = val;
             }
             Msg::UpdateEdit(val) => {
-                println!("Input: {}", val);
+                console_log!("Input: {}", val);
                 self.state.edit_value = val;
             }
             Msg::Remove(idx) => {
@@ -187,7 +194,15 @@ impl Model {
             let output = function(input);
             let r = raft_client.clone();
             spawn_local(async move {
-                r.send(output).await.unwrap();
+                loop {
+                    match r.send(output.clone()).await {
+                        Ok(()) => return,
+                        Err(err) => {
+                            console_log!("err: {:?}, retrying...", err);
+                            sleep(Duration::from_millis(500)).await;
+                        }
+                    }
+                }
             })
         };
         closure.into()
@@ -202,7 +217,15 @@ impl Model {
             if let Some(output) = function(input) {
                 let r = raft_client.clone();
                 spawn_local(async move {
-                    r.send(output).await.unwrap();
+                    loop {
+                        match r.send(output.clone()).await {
+                            Ok(()) => return,
+                            Err(err) => {
+                                console_log!("err: {:?}, retrying...", err);
+                                sleep(Duration::from_millis(500)).await;
+                            }
+                        }
+                    }
                 });
             }
         };
