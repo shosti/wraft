@@ -10,9 +10,9 @@ use crate::webrtc_rpc::introduce;
 use crate::webrtc_rpc::transport;
 use base64::write::EncoderStringWriter;
 use errors::{ClientError, Error};
-use futures::channel::mpsc::unbounded;
-use futures::channel::mpsc::{channel, Sender, UnboundedReceiver};
+use futures::channel::mpsc::{channel, unbounded, Receiver, Sender, UnboundedReceiver};
 use futures::channel::oneshot;
+use futures::select;
 use futures::stream::StreamExt;
 use futures::Stream;
 use rpc_server::RpcServer;
@@ -37,10 +37,17 @@ pub type ClientMessage<Cmd> = (
     oneshot::Sender<Result<ClientResponse<Cmd>, ClientError>>,
 );
 
-#[derive(Debug)]
-pub struct Raft<Cmd> {
-    client_tx: Sender<ClientMessage<Cmd>>,
-    state_machine_rx: UnboundedReceiver<Cmd>,
+type StateGetRequest<St> = (
+    <St as State>::Key,
+    oneshot::Sender<Option<<St as State>::Item>>,
+);
+
+type StateUpdate = ();
+
+pub struct Raft<St: State> {
+    client_tx: Sender<ClientMessage<St::Command>>,
+    state_get_tx: Sender<StateGetRequest<St>>,
+    updates_rx: Receiver<StateUpdate>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -125,10 +132,7 @@ pub struct RaftStateDump {
     last_applied: LogIndex,
 }
 
-impl<Cmd> Raft<Cmd>
-where
-    Cmd: Command
-{
+impl<St: State> Raft<St> {
     pub async fn start(
         hostname: &str,
         session_key: u128,
@@ -185,14 +189,71 @@ where
         }
         .start();
 
+        // if no one's listening we basically want to discard updates, so the
+        // update channel has size 1
+        let (updates_tx, updates_rx) = channel(1);
+        let (state_get_tx, state_get_rx) = channel(10);
+
+        spawn_local(Self::handle_state_machine(
+            state_machine_rx,
+            updates_tx,
+            state_get_rx,
+        ));
+
         Ok(Self {
             client_tx,
-            state_machine_rx,
+            state_get_tx,
+            updates_rx,
         })
     }
 
-    pub fn client(&self) -> client::Client<Cmd> {
-        client::Client::new(self.client_tx.clone())
+    pub fn client(&self) -> client::Client<St> {
+        client::Client::new(self.client_tx.clone(), self.state_get_tx.clone())
+    }
+
+    async fn handle_state_machine(
+        mut state_machine_rx: UnboundedReceiver<St::Command>,
+        mut updates_tx: Sender<StateUpdate>,
+        mut state_get_rx: Receiver<StateGetRequest<St>>,
+    ) {
+        let mut state = St::default();
+        loop {
+            select! {
+                res = state_machine_rx.next() => {
+                    match res {
+                        Some(cmd) => {
+                            state.apply(cmd);
+                            if let Err(err) = updates_tx.try_send(()) {
+                                if err.is_disconnected() {
+                                    console_log!("updates channel closed, exiting state machine handler");
+                                    return;
+                                } else if !err.is_full() {
+                                    panic!("unexpected error: {:?}", err);
+                                }
+                                // Otherwise, the channel is full; updates are
+                                // best-effort so not an issue really.
+                            }
+                        }
+                        None => {
+                            console_log!("state machine channel closed, exiting state machine handler");
+                            return;
+                        }
+                    }
+                }
+                res = state_get_rx.next() => {
+                    match res {
+                        Some((k, resp_tx)) => {
+                            let val = state.get(k);
+                            let _ = resp_tx.send(val);
+                        }
+                        None => {
+                            console_log!("state get channel closed, exiting state machine handler");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn generate_node_id(hostname: &str, session_key: u128) -> NodeId {
@@ -233,19 +294,73 @@ where
     }
 }
 
-impl<Cmd> Stream for Raft<Cmd> {
-    type Item = Cmd;
+impl<St: State> Stream for Raft<St> {
+    type Item = StateUpdate;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.state_machine_rx.poll_next_unpin(cx)
+        self.updates_rx.poll_next_unpin(cx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.state_machine_rx.size_hint()
+        self.updates_rx.size_hint()
     }
 }
 
 pub trait Command: Serialize + DeserializeOwned + Debug + Send + 'static {}
+
+pub trait State: Serialize + DeserializeOwned + Default + 'static {
+    type Command: Command;
+    type Item;
+    type Key;
+
+    fn apply(&mut self, cmd: Self::Command);
+    fn get(&self, key: Self::Key) -> Option<Self::Item>;
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum HashMapCommand<K, V> {
+    Set(K, V),
+    Delete(K),
+}
+
+impl<K, V> Command for HashMapCommand<K, V>
+where
+    K: Serialize + DeserializeOwned + std::cmp::Eq + std::hash::Hash + Send + Debug + 'static,
+    V: Serialize + DeserializeOwned + Send + Debug + 'static,
+{
+}
+
+impl<K, V> State for HashMap<K, V>
+where
+    K: Serialize
+        + DeserializeOwned
+        + Clone
+        + std::cmp::Eq
+        + std::hash::Hash
+        + Send
+        + Debug
+        + 'static,
+    V: Serialize + DeserializeOwned + Clone + Send + Debug + 'static,
+{
+    type Command = HashMapCommand<K, V>;
+    type Item = V;
+    type Key = K;
+
+    fn apply(&mut self, cmd: Self::Command) {
+        match cmd {
+            HashMapCommand::Set(k, v) => {
+                self.insert(k, v);
+            }
+            HashMapCommand::Delete(k) => {
+                self.remove(&k);
+            }
+        }
+    }
+
+    fn get(&self, k: Self::Key) -> Option<Self::Item> {
+        self.get(&k).cloned()
+    }
+}

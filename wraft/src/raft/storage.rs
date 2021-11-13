@@ -1,4 +1,4 @@
-use crate::raft::{LogEntry, LogIndex, NodeId, TermIndex, Command};
+use crate::raft::{Command, LogEntry, LogIndex, NodeId, TermIndex};
 use base64::write::EncoderStringWriter;
 use std::fmt::Debug;
 use std::io::Cursor;

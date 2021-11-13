@@ -1,13 +1,30 @@
+use crate::raft;
 use serde::{Deserialize, Serialize};
-use strum_macros::{EnumIter, Display};
+use strum_macros::{Display, EnumIter};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct State {
     pub entries: Vec<Entry>,
     pub filter: Filter,
     pub value: String,
     pub edit_value: String,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum Msg {
+    Add,
+    Edit(usize),
+    Update(String),
+    UpdateEdit(String),
+    Remove(usize),
+    SetFilter(Filter),
+    ToggleAll,
+    ToggleEdit(usize),
+    Toggle(usize),
+    ClearCompleted,
+}
+
+impl raft::Command for Msg {}
 
 impl State {
     pub fn total(&self) -> usize {
@@ -111,7 +128,7 @@ impl State {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Entry {
     pub description: String,
     pub completed: bool,
@@ -139,5 +156,69 @@ impl Filter {
             Filter::Active => "#/active",
             Filter::Completed => "#/completed",
         }
+    }
+}
+impl Default for Filter {
+    fn default() -> Self {
+        Filter::All
+    }
+}
+
+impl raft::State for State {
+    type Command = Msg;
+    type Item = Self;
+    type Key = ();
+
+    fn apply(&mut self, cmd: Self::Command) {
+        match cmd {
+            Msg::Add => {
+                let description = self.value.trim();
+                if !description.is_empty() {
+                    let entry = Entry {
+                        description: description.to_string(),
+                        completed: false,
+                        editing: false,
+                    };
+                    self.entries.push(entry);
+                }
+                self.value = "".to_string();
+            }
+            Msg::Edit(idx) => {
+                let edit_value = self.edit_value.trim().to_string();
+                self.complete_edit(idx, edit_value);
+                self.edit_value = "".to_string();
+            }
+            Msg::Update(val) => {
+                self.value = val;
+            }
+            Msg::UpdateEdit(val) => {
+                self.edit_value = val;
+            }
+            Msg::Remove(idx) => {
+                self.remove(idx);
+            }
+            Msg::SetFilter(filter) => {
+                self.filter = filter;
+            }
+            Msg::ToggleEdit(idx) => {
+                self.edit_value = self.entries[idx].description.clone();
+                self.clear_all_edit();
+                self.toggle_edit(idx);
+            }
+            Msg::ToggleAll => {
+                let status = !self.is_all_completed();
+                self.toggle_all(status);
+            }
+            Msg::Toggle(idx) => {
+                self.toggle(idx);
+            }
+            Msg::ClearCompleted => {
+                self.clear_completed();
+            }
+        }
+    }
+
+    fn get(&self, _key: Self::Key) -> Option<Self::Item> {
+        Some(self.clone())
     }
 }

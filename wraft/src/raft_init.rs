@@ -1,4 +1,4 @@
-use crate::raft::{Command, Raft};
+use crate::raft::{self, Raft};
 use rand::{thread_rng, Rng};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
@@ -8,31 +8,31 @@ use yew::Properties;
 
 const CLUSTER_SIZE: usize = 3;
 
-pub struct RaftWrapper<M>(Arc<Mutex<Option<Raft<M>>>>);
+pub struct RaftWrapper<S: raft::State>(Arc<Mutex<Option<Raft<S>>>>);
 
-impl<M> RaftWrapper<M> {
-    pub fn new(raft: Raft<M>) -> Self {
+impl<S: raft::State> RaftWrapper<S> {
+    pub fn new(raft: Raft<S>) -> Self {
         Self(Arc::new(Mutex::new(Some(raft))))
     }
 
-    pub fn take(&self) -> Option<Raft<M>> {
+    pub fn take(&self) -> Option<Raft<S>> {
         let mut r = self.0.lock().unwrap();
         r.take()
     }
 }
 
-impl<M> Clone for RaftWrapper<M> {
+impl<S: raft::State> Clone for RaftWrapper<S> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
 #[derive(Properties)]
-pub struct RaftProps<M> {
-    pub raft: RaftWrapper<M>,
+pub struct RaftProps<S: raft::State> {
+    pub raft: RaftWrapper<S>,
 }
 
-impl<M> Clone for RaftProps<M> {
+impl<S: raft::State> Clone for RaftProps<S> {
     fn clone(&self) -> Self {
         Self {
             raft: self.raft.clone(),
@@ -40,36 +40,36 @@ impl<M> Clone for RaftProps<M> {
     }
 }
 
-pub enum Msg<M> {
+pub enum Msg<S: raft::State> {
     UpdateSessionKey(String),
     StartCluster,
     JoinCluster,
     ClearStorage,
-    ClusterStarted(RaftWrapper<M>),
+    ClusterStarted(RaftWrapper<S>),
 }
 
-enum State<M> {
+enum State<S: raft::State> {
     Setup,
     Waiting(u128),
-    Running(RaftWrapper<M>),
+    Running(RaftWrapper<S>),
 }
 
-pub struct Model<C: Component<Properties = RaftProps<M>>, M>
+pub struct Model<C: Component<Properties = RaftProps<S>>, S: raft::State>
 where
-    M: Command + Clone,
+    S: raft::State + Clone,
 {
     link: ComponentLink<Self>,
     session_key: String,
-    state: State<M>,
+    state: State<S>,
     _component: PhantomData<C>,
-    _message: PhantomData<M>,
+    _message: PhantomData<S>,
 }
 
-impl<C: Component<Properties = RaftProps<M>>, M> Component for Model<C, M>
+impl<C: Component<Properties = RaftProps<S>>, S> Component for Model<C, S>
 where
-    M: Command + Clone,
+    S: raft::State + Clone,
 {
-    type Message = Msg<M>;
+    type Message = Msg<S>;
     type Properties = ();
 
     fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
@@ -138,9 +138,9 @@ where
     }
 }
 
-impl<C: Component<Properties = RaftProps<M>>, M> Model<C, M>
+impl<C: Component<Properties = RaftProps<S>>, S> Model<C, S>
 where
-    M: Command + Clone,
+    S: raft::State + Clone,
 {
     fn render_setup(&self) -> Html {
         let start = self.link.callback(|_| Msg::StartCluster);
@@ -181,7 +181,7 @@ where
         }
     }
 
-    fn render_running(&self, raft: RaftWrapper<M>) -> Html {
+    fn render_running(&self, raft: RaftWrapper<S>) -> Html {
         html! { <C raft=raft /> }
     }
 

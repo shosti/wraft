@@ -1,5 +1,8 @@
 use crate::{
-    raft::{errors::ClientError, ClientMessage, ClientRequest, ClientResponse, RaftStateDump},
+    raft::{
+        errors::ClientError, ClientMessage, ClientRequest, ClientResponse, RaftStateDump, State,
+        StateGetRequest,
+    },
     util::sleep,
 };
 use futures::{
@@ -10,18 +13,34 @@ use std::time::Duration;
 
 const CLIENT_REQUEST_TIMEOUT_MILLIS: u64 = 2000;
 
-pub struct Client<Cmd> {
-    client_tx: Sender<ClientMessage<Cmd>>,
+pub struct Client<St: State> {
+    client_tx: Sender<ClientMessage<St::Command>>,
+    state_get_tx: Sender<StateGetRequest<St>>,
 }
 
-impl<Cmd> Client<Cmd> {
-    pub fn new(client_tx: Sender<ClientMessage<Cmd>>) -> Self {
-        Self { client_tx }
+impl<St: State> Client<St> {
+    pub fn new(
+        client_tx: Sender<ClientMessage<St::Command>>,
+        state_get_tx: Sender<StateGetRequest<St>>,
+    ) -> Self {
+        Self {
+            client_tx,
+            state_get_tx,
+        }
     }
 
-    pub async fn send(&self, val: Cmd) -> Result<(), ClientError> {
+    pub async fn send(&self, val: St::Command) -> Result<(), ClientError> {
         let req = ClientRequest::Apply(val);
         self.do_client_request(req).await.map(|_| ())
+    }
+
+    pub async fn get(&self, k: St::Key) -> Result<Option<St::Item>, ClientError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let mut tx = self.state_get_tx.clone();
+        tx.send((k, resp_tx))
+            .await
+            .map_err(|_| ClientError::Unavailable)?;
+        resp_rx.await.map_err(|_| ClientError::Unavailable)
     }
 
     pub async fn debug(&self) -> Result<Box<RaftStateDump>, ClientError> {
@@ -35,8 +54,8 @@ impl<Cmd> Client<Cmd> {
 
     async fn do_client_request(
         &self,
-        req: ClientRequest<Cmd>,
-    ) -> Result<ClientResponse<Cmd>, ClientError> {
+        req: ClientRequest<St::Command>,
+    ) -> Result<ClientResponse<St::Command>, ClientError> {
         let (resp_tx, mut resp_rx) = oneshot::channel();
         let mut tx = self.client_tx.clone();
         tx.send((req, resp_tx))
@@ -57,10 +76,11 @@ impl<Cmd> Client<Cmd> {
     }
 }
 
-impl<Cmd> Clone for Client<Cmd> {
+impl<St: State> Clone for Client<St> {
     fn clone(&self) -> Self {
         Self {
             client_tx: self.client_tx.clone(),
+            state_get_tx: self.state_get_tx.clone(),
         }
     }
 }

@@ -1,8 +1,8 @@
 use crate::console_log;
 use crate::raft::client::Client;
-use crate::raft::{Command, Raft};
+use crate::raft::Raft;
 use crate::raft_init::{self, RaftProps};
-use crate::todo_state::{Entry, Filter, State};
+use crate::todo_state::{self, Entry, Filter, State};
 use crate::util::sleep;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -17,110 +17,63 @@ use yew::{events::KeyboardEvent, Classes};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Msg {
-    Add,
-    Edit(usize),
-    Update(String),
-    UpdateEdit(String),
-    Remove(usize),
-    SetFilter(Filter),
-    ToggleAll,
-    ToggleEdit(usize),
-    Toggle(usize),
-    ClearCompleted,
+    StateUpdate,
+    GotState(State),
     Focus,
 }
 
-impl Command for Msg {}
-
 pub struct Model {
-    state: State,
     link: ComponentLink<Self>,
     focus_ref: NodeRef,
-    raft_client: Client<Msg>,
+    raft_client: Client<State>,
+    state: State,
 }
 
-pub type Todo = raft_init::Model<Model, Msg>;
+pub type Todo = raft_init::Model<Model, State>;
 
 impl Component for Model {
     type Message = Msg;
-    type Properties = RaftProps<Msg>;
+    type Properties = RaftProps<State>;
 
     fn create(props: Self::Properties, link: ComponentLink<Self>) -> Self {
-        let entries = Vec::new();
-        let state = State {
-            entries,
-            filter: Filter::All,
-            value: "".into(),
-            edit_value: "".into(),
-        };
         let focus_ref = NodeRef::default();
         let raft = props.raft.take().unwrap();
         let raft_client = raft.client();
 
         Self::run_raft(raft, link.clone());
         Self {
-            state,
             link,
             focus_ref,
             raft_client,
+            state: State::default(),
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
-            Msg::Add => {
-                let description = self.state.value.trim();
-                if !description.is_empty() {
-                    let entry = Entry {
-                        description: description.to_string(),
-                        completed: false,
-                        editing: false,
-                    };
-                    self.state.entries.push(entry);
-                }
-                self.state.value = "".to_string();
-            }
-            Msg::Edit(idx) => {
-                let edit_value = self.state.edit_value.trim().to_string();
-                self.state.complete_edit(idx, edit_value);
-                self.state.edit_value = "".to_string();
-            }
-            Msg::Update(val) => {
-                console_log!("Input: {}", val);
-                self.state.value = val;
-            }
-            Msg::UpdateEdit(val) => {
-                console_log!("Input: {}", val);
-                self.state.edit_value = val;
-            }
-            Msg::Remove(idx) => {
-                self.state.remove(idx);
-            }
-            Msg::SetFilter(filter) => {
-                self.state.filter = filter;
-            }
-            Msg::ToggleEdit(idx) => {
-                self.state.edit_value = self.state.entries[idx].description.clone();
-                self.state.clear_all_edit();
-                self.state.toggle_edit(idx);
-            }
-            Msg::ToggleAll => {
-                let status = !self.state.is_all_completed();
-                self.state.toggle_all(status);
-            }
-            Msg::Toggle(idx) => {
-                self.state.toggle(idx);
-            }
-            Msg::ClearCompleted => {
-                self.state.clear_completed();
-            }
             Msg::Focus => {
                 if let Some(input) = self.focus_ref.cast::<InputElement>() {
                     input.focus().unwrap();
+                    true
+                } else {
+                    false
                 }
             }
+            Msg::StateUpdate => {
+                let link = self.link.clone();
+                let raft_client = self.raft_client.clone();
+                spawn_local(async move {
+                    if let Ok(Some(new_state)) = raft_client.get(()).await {
+                        link.send_message(Msg::GotState(new_state))
+                    }
+                });
+                false
+            }
+            Msg::GotState(state) => {
+                self.state = state;
+                true
+            }
         }
-        true
     }
 
     fn change(&mut self, _: Self::Properties) -> ShouldRender {
@@ -146,7 +99,7 @@ impl Component for Model {
                             class="toggle-all"
                             id="toggle-all"
                             checked=self.state.is_all_completed()
-                            onclick=self.raft_callback(|_| Msg::ToggleAll)
+                            onclick=self.raft_callback(|_| todo_state::Msg::ToggleAll)
                         />
                         <label for="toggle-all" />
                         <ul class="todo-list">
@@ -161,7 +114,7 @@ impl Component for Model {
                         <ul class="filters">
                             { for Filter::iter().map(|flt| self.view_filter(flt)) }
                         </ul>
-                        <button class="clear-completed" onclick=self.raft_callback(|_| Msg::ClearCompleted)>
+                        <button class="clear-completed" onclick=self.raft_callback(|_| todo_state::Msg::ClearCompleted)>
                             { format!("Clear completed ({})", self.state.total_completed()) }
                         </button>
                     </footer>
@@ -177,17 +130,17 @@ impl Component for Model {
 }
 
 impl Model {
-    fn run_raft(mut raft: Raft<Msg>, link: ComponentLink<Self>) {
+    fn run_raft(mut raft: Raft<State>, link: ComponentLink<Self>) {
         spawn_local(async move {
-            while let Some(cmd) = raft.next().await {
-                link.send_message(cmd);
+            while let Some(()) = raft.next().await {
+                link.send_message(Msg::StateUpdate);
             }
         });
     }
 
     pub fn raft_callback<F, IN>(&self, function: F) -> Callback<IN>
     where
-        F: Fn(IN) -> Msg + 'static,
+        F: Fn(IN) -> todo_state::Msg + 'static,
     {
         let raft_client = self.raft_client.clone();
         let closure = move |input| {
@@ -210,7 +163,7 @@ impl Model {
 
     pub fn raft_batch_callback<F, IN>(&self, function: F) -> Callback<IN>
     where
-        F: Fn(IN) -> Option<Msg> + 'static,
+        F: Fn(IN) -> Option<todo_state::Msg> + 'static,
     {
         let raft_client = self.raft_client.clone();
         let closure = move |input| {
@@ -242,7 +195,7 @@ impl Model {
             <li>
                 <a class=cls
                    href=filter.as_href()
-                   onclick=self.raft_callback(move |_| Msg::SetFilter(filter))
+                   onclick=self.raft_callback(move |_| todo_state::Msg::SetFilter(filter))
                 >
                     { filter }
                 </a>
@@ -258,9 +211,9 @@ impl Model {
                 class="new-todo"
                 placeholder="What needs to be done?"
                 value=self.state.value.clone()
-                oninput=self.raft_callback(|e: InputData| Msg::Update(e.value))
+                oninput=self.raft_callback(|e: InputData| todo_state::Msg::Update(e.value))
                 onkeypress=self.raft_batch_callback(|e: KeyboardEvent| {
-                    if e.key() == "Enter" { Some(Msg::Add) } else { None }
+                    if e.key() == "Enter" { Some(todo_state::Msg::Add) } else { None }
                 })
             />
             /* Or multiline:
@@ -286,10 +239,10 @@ impl Model {
                         type="checkbox"
                         class="toggle"
                         checked=entry.completed
-                        onclick=self.raft_callback(move |_| Msg::Toggle(idx))
+                        onclick=self.raft_callback(move |_| todo_state::Msg::Toggle(idx))
                     />
-                    <label ondblclick=self.raft_callback(move |_| Msg::ToggleEdit(idx))>{ &entry.description }</label>
-                    <button class="destroy" onclick=self.raft_callback(move |_| Msg::Remove(idx)) />
+                    <label ondblclick=self.raft_callback(move |_| todo_state::Msg::ToggleEdit(idx))>{ &entry.description }</label>
+                    <button class="destroy" onclick=self.raft_callback(move |_| todo_state::Msg::Remove(idx)) />
                 </div>
                 { self.view_entry_edit_input((idx, entry)) }
             </li>
@@ -304,11 +257,11 @@ impl Model {
                     type="text"
                     ref=self.focus_ref.clone()
                     value=self.state.edit_value.clone()
-                    onmouseover=self.raft_callback(|_| Msg::Focus)
-                    oninput=self.raft_callback(|e: InputData| Msg::UpdateEdit(e.value))
-                    onblur=self.raft_callback(move |_| Msg::Edit(idx))
+                    onmouseover=self.link.callback(|_| Msg::Focus)
+                    oninput=self.raft_callback(|e: InputData| todo_state::Msg::UpdateEdit(e.value))
+                    onblur=self.raft_callback(move |_| todo_state::Msg::Edit(idx))
                     onkeypress=self.raft_batch_callback(move |e: KeyboardEvent| {
-                        if e.key() == "Enter" { Some(Msg::Edit(idx)) } else { None }
+                        if e.key() == "Enter" { Some(todo_state::Msg::Edit(idx)) } else { None }
                     })
                 />
             }
