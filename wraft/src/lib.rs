@@ -9,7 +9,6 @@ pub mod util;
 mod webrtc_rpc;
 use wasm_bindgen::prelude::*;
 mod benchmark;
-pub mod init;
 mod todo;
 
 // Use `wee_alloc` as the global allocator.
