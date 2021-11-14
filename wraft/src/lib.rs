@@ -10,6 +10,7 @@ mod webrtc_rpc;
 use wasm_bindgen::prelude::*;
 mod benchmark;
 mod todo;
+use benchmark::Benchmark;
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
@@ -19,8 +20,8 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 pub enum Route {
     #[to = "/todo"]
     Todo,
-    // #[to = "/bench"]
-    // Benchmark,
+    #[to = "/bench"]
+    Benchmark,
     #[to = "/"]
     Home,
 }
@@ -53,16 +54,16 @@ impl Component for Model {
                                 <h1>{ "Try out WRaft!" }</h1>
                                 <ul>
                                 <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
-                                // <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
+                                <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
                                 </ul>
                                 </>
                         },
                         Route::Todo => html! {
                             <Todo />
                         },
-                        // Route::Benchmark => html! {
-                        //     <benchmark::Model />
-                        // },
+                        Route::Benchmark => html! {
+                            <Benchmark />
+                        },
                     }
                 })
                 />
