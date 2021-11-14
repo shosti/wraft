@@ -87,6 +87,16 @@ impl Component for Model {
             ""
         };
         html! {
+            <>
+                <link
+                rel="stylesheet"
+                href="https://cdn.jsdelivr.net/npm/todomvc-common@1.0.5/base.css"
+                />
+                <link
+                rel="stylesheet"
+                href="https://cdn.jsdelivr.net/npm/todomvc-app-css@2.3.0/index.css"
+                />
+
             <div class="todomvc-wrapper">
                 <section class="todoapp">
                     <header class="header">
@@ -125,6 +135,7 @@ impl Component for Model {
                     <p>{ "Part of " }<a href="http://todomvc.com/" target="_blank">{ "TodoMVC" }</a></p>
                 </footer>
             </div>
+                </>
         }
     }
 }
