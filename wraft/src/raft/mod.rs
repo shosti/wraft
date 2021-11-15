@@ -45,7 +45,7 @@ type StateGetRequest<St> = (
 pub struct Raft<St: State> {
     client_tx: Sender<ClientMessage<St::Command>>,
     state_get_tx: Sender<StateGetRequest<St>>,
-    updates_rx: Receiver<St::Update>,
+    updates_rx: Receiver<St::Notification>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -211,7 +211,7 @@ impl<St: State> Raft<St> {
 
     async fn handle_state_machine(
         mut state_machine_rx: UnboundedReceiver<St::Command>,
-        mut updates_tx: Sender<St::Update>,
+        mut updates_tx: Sender<St::Notification>,
         mut state_get_rx: Receiver<StateGetRequest<St>>,
     ) {
         let mut state = St::default();
@@ -293,7 +293,7 @@ impl<St: State> Raft<St> {
 }
 
 impl<St: State> Stream for Raft<St> {
-    type Item = St::Update;
+    type Item = St::Notification;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -313,9 +313,9 @@ pub trait State: Serialize + DeserializeOwned + Default + 'static {
     type Command: Command;
     type Item;
     type Key;
-    type Update;
+    type Notification;
 
-    fn apply(&mut self, cmd: Self::Command) -> Self::Update;
+    fn apply(&mut self, cmd: Self::Command) -> Self::Notification;
     fn get(&self, key: Self::Key) -> Option<Self::Item>;
 }
 
@@ -347,7 +347,7 @@ where
     type Command = HashMapCommand<K, V>;
     type Item = V;
     type Key = K;
-    type Update = ();
+    type Notification = ();
 
     fn apply(&mut self, cmd: Self::Command) {
         match cmd {

@@ -168,7 +168,7 @@ impl raft::State for State {
     type Command = Msg;
     type Item = Self;
     type Key = ();
-    type Update = ();
+    type Notification = ();
 
     fn apply(&mut self, cmd: Self::Command) {
         match cmd {

@@ -41,7 +41,7 @@ impl raft::State for State {
     type Command = BenchMsg;
     type Item = BenchResult;
     type Key = ();
-    type Update = BenchMsg;
+    type Notification = BenchMsg;
 
     fn apply(&mut self, cmd: Self::Command) -> BenchMsg {
         cmd
