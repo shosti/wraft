@@ -21,8 +21,7 @@ pub struct Model {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum BenchMsg {
-    Start(f64),
-    Reset,
+    Start,
     Iter,
 }
 
@@ -30,8 +29,6 @@ impl raft::Command for BenchMsg {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct State {
-    start: Option<f64>,
-    iters: usize,
 }
 
 pub struct BenchResult {
@@ -43,30 +40,15 @@ pub struct BenchResult {
 impl raft::State for State {
     type Command = BenchMsg;
     type Item = BenchResult;
-    type Key = f64;
-    type Update = ();
+    type Key = ();
+    type Update = BenchMsg;
 
-    fn apply(&mut self, cmd: Self::Command) {
-        match cmd {
-            BenchMsg::Start(start) => {
-                self.start = Some(start);
-            }
-            BenchMsg::Reset => {
-                self.start = None;
-                self.iters = 0;
-            }
-            BenchMsg::Iter => {
-                self.iters += 1;
-            }
-        }
+    fn apply(&mut self, cmd: Self::Command) -> BenchMsg {
+        cmd
     }
 
-    fn get(&self, end: f64) -> Option<Self::Item> {
-        self.start.map(|start| BenchResult {
-            start,
-            end,
-            iters: self.iters,
-        })
+    fn get(&self, _: ()) -> Option<Self::Item> {
+        None
     }
 }
 
@@ -175,15 +157,26 @@ impl Model {
     }
 
     fn run_update_notifier(mut raft: Raft<State>, link: ComponentLink<Self>) {
-        let client = raft.client();
         let performance = window().expect("no global window").performance().unwrap();
         spawn_local(async move {
-            let mut msg_count = 0;
-            while let Some(()) = raft.next().await {
-                msg_count += 1;
-                if msg_count % 50 == 0 {
-                    if let Ok(Some(result)) = client.get(performance.now()).await {
-                        link.send_message(Msg::BenchResult(result));
+            let mut start = performance.now();
+            let mut iters = 0;
+            while let Some(msg) = raft.next().await {
+                match msg {
+                    BenchMsg::Start => {
+                        start = performance.now();
+                        iters = 0;
+                    }
+                    BenchMsg::Iter => {
+                        iters += 1;
+                        if iters % 50 == 0 {
+                            let result = BenchResult {
+                                iters,
+                                start,
+                                end: performance.now(),
+                            };
+                            link.send_message(Msg::BenchResult(result));
+                        }
                     }
                 }
             }
@@ -194,9 +187,7 @@ impl Model {
         raft_client: &mut Client<State>,
         bench_toggle: &mut UnboundedReceiver<()>,
     ) {
-        let performance = window().expect("no global window").performance().unwrap();
-        let start = performance.now();
-        if let Err(err) = raft_client.send(BenchMsg::Start(start)).await {
+        if let Err(err) = raft_client.send(BenchMsg::Start).await {
             console_log!("error: {:?}", err);
             return;
         }
