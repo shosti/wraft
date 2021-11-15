@@ -211,7 +211,7 @@ impl Model {
                     <strong>{ "Results:" }</strong>
                 {
                     format!(
-                        "{} iterations in {} seconds ({} iterations per second)",
+                        "{} iterations in {:.2} seconds ({:.2} iterations per second)",
                         res.iters,
                         elapsed_secs,
                         iterations_per_sec
