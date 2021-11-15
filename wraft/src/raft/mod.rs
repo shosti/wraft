@@ -42,12 +42,10 @@ type StateGetRequest<St> = (
     oneshot::Sender<Option<<St as State>::Item>>,
 );
 
-type StateUpdate = ();
-
 pub struct Raft<St: State> {
     client_tx: Sender<ClientMessage<St::Command>>,
     state_get_tx: Sender<StateGetRequest<St>>,
-    updates_rx: Receiver<StateUpdate>,
+    updates_rx: Receiver<St::Update>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -213,7 +211,7 @@ impl<St: State> Raft<St> {
 
     async fn handle_state_machine(
         mut state_machine_rx: UnboundedReceiver<St::Command>,
-        mut updates_tx: Sender<StateUpdate>,
+        mut updates_tx: Sender<St::Update>,
         mut state_get_rx: Receiver<StateGetRequest<St>>,
     ) {
         let mut state = St::default();
@@ -222,8 +220,8 @@ impl<St: State> Raft<St> {
                 res = state_machine_rx.next() => {
                     match res {
                         Some(cmd) => {
-                            state.apply(cmd);
-                            if let Err(err) = updates_tx.try_send(()) {
+                            let update = state.apply(cmd);
+                            if let Err(err) = updates_tx.try_send(update) {
                                 if err.is_disconnected() {
                                     console_log!("updates channel closed, exiting state machine handler");
                                     return;
@@ -295,7 +293,7 @@ impl<St: State> Raft<St> {
 }
 
 impl<St: State> Stream for Raft<St> {
-    type Item = StateUpdate;
+    type Item = St::Update;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -315,8 +313,9 @@ pub trait State: Serialize + DeserializeOwned + Default + 'static {
     type Command: Command;
     type Item;
     type Key;
+    type Update;
 
-    fn apply(&mut self, cmd: Self::Command);
+    fn apply(&mut self, cmd: Self::Command) -> Self::Update;
     fn get(&self, key: Self::Key) -> Option<Self::Item>;
 }
 
@@ -348,6 +347,7 @@ where
     type Command = HashMapCommand<K, V>;
     type Item = V;
     type Key = K;
+    type Update = ();
 
     fn apply(&mut self, cmd: Self::Command) {
         match cmd {

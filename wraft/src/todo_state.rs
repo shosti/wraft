@@ -168,6 +168,7 @@ impl raft::State for State {
     type Command = Msg;
     type Item = Self;
     type Key = ();
+    type Update = ();
 
     fn apply(&mut self, cmd: Self::Command) {
         match cmd {

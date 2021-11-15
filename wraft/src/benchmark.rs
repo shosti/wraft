@@ -44,6 +44,7 @@ impl raft::State for State {
     type Command = BenchMsg;
     type Item = BenchResult;
     type Key = f64;
+    type Update = ();
 
     fn apply(&mut self, cmd: Self::Command) {
         match cmd {
