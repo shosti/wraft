@@ -1,8 +1,11 @@
 [package]
 name = "wraft"
+description = "Raft replication for WebAssembly"
 version = "0.1.0"
 authors = ["Emanuel Evans <me@eevans.co>"]
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/shosti/wraft"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
