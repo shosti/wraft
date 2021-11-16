@@ -14,7 +14,7 @@ issue and let me know!
 
 ## How does it work?
 
-First, WRaft uses [WebRTC data
+WRaft uses [WebRTC data
 channels](https://webrtc.org/getting-started/data-channels) to set up
 communication between the browser windows. Sadly [WebRTC isn't purely
 peer-to-peer](https://www.youtube.com/watch?v=Y1mx7cx6ckI), so there's a
@@ -83,7 +83,7 @@ them if I have time.
 
 ## Should I use it in production?
 
-**No!** (At least not in it's current state.) Documentation, error handling, and
+**No!** (At least not in its current state.) Documentation, error handling, and
 testing are basically non-existent, and I haven't implemented some harder parts
 of Raft like log compaction and cluster membership changes. There are a few bugs
 I know about and almost certainly many more I don't!
