@@ -131,8 +131,8 @@ impl Component for Model {
                 </section>
                 <footer class="info">
                     <p>{ "Double-click to edit a todo" }</p>
-                    <p>{ "Written by " }<a href="https://github.com/DenisKolodin/" target="_blank">{ "Denis Kolodin" }</a></p>
-                    <p>{ "Part of " }<a href="http://todomvc.com/" target="_blank">{ "TodoMVC" }</a></p>
+                    <p>{ "Written by " }<a href="https://github.com/shosti/" target="_blank">{ "Emanuel Evans" }</a></p>
+                    <p>{ "Adapted from TodoMVC by " }<a href="https://github.com/DenisKolodin/" target="_blank">{ "Denis Kolodin" }</a></p>
                 </footer>
             </div>
                 </>
