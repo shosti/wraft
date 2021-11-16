@@ -28,8 +28,7 @@ pub enum BenchMsg {
 impl raft::Command for BenchMsg {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct State {
-}
+pub struct State {}
 
 pub struct BenchResult {
     start: f64,
