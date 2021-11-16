@@ -64,8 +64,7 @@ fast to me! In the best-case scenario (three Chromium browsers on the same
 machine) I've seen ~2000 writes/second which should be enough for any use case I
 can think of 😄. (The bigger issue is that you hit the local storage quota
 pretty fast; log compaction would have to be implemented to work around that.)
-Firefox sadly seems to top out at ~400 writes/second for reasons I haven't dug
-into yet.
+Firefox seems to top out at ~800 writes/second.
 
 ## What parts of Raft are implemented?
 
