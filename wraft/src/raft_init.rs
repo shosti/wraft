@@ -3,6 +3,7 @@ use rand::{thread_rng, Rng};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen_futures::spawn_local;
+use web_sys::{Storage, Window};
 use yew::prelude::*;
 use yew::Properties;
 
@@ -79,6 +80,7 @@ where
 
     fn create(props: Self::Properties, link: ComponentLink<Self>) -> Self {
         if let Some(session_key) = props.session_key {
+            Self::start_raft(session_key, link.clone());
             Self {
                 link,
                 state: State::Waiting(session_key),
@@ -105,13 +107,13 @@ where
             }
             Msg::StartCluster => {
                 let session_key = generate_session_key();
-                self.start_raft(session_key, self.link.clone());
+                Self::start_raft(session_key, self.link.clone());
                 self.state = State::Waiting(session_key);
                 true
             }
             Msg::JoinCluster => match u128::from_str_radix(&self.session_key, 16) {
                 Ok(session_key) => {
-                    self.start_raft(session_key, self.link.clone());
+                    Self::start_raft(session_key, self.link.clone());
                     self.state = State::Waiting(session_key);
                     true
                 }
@@ -124,14 +126,11 @@ where
                 }
             },
             Msg::ClearStorage => {
-                web_sys::window()
-                    .unwrap()
-                    .local_storage()
-                    .unwrap()
-                    .unwrap()
-                    .clear()
+                local_storage().clear().unwrap();
+                window()
+                    .alert_with_message("Storage cleared successfully!")
                     .unwrap();
-                false
+                true
             }
             Msg::ClusterStarted(raft) => {
                 self.state = State::Running(raft);
@@ -160,6 +159,7 @@ where
     fn render_setup(&self) -> Html {
         let start = self.link.callback(|_| Msg::StartCluster);
         let session_key = self.session_key.clone();
+        let local_storage_items = local_storage().length().unwrap();
         html! {
             <>
                 <h1>{ "Startup" }</h1>
@@ -167,20 +167,23 @@ where
                 <button type="button" onclick=start>{ "Start new cluster" }</button>
                 </p>
                 <p>
-                <div>
-                <label for="join-session-key">{ "Join existing cluster" }</label>
-                </div>
+                <label for="join-session-key">{ "Join existing cluster: " }</label>
                 <input
                 type="text"
                 value=session_key
                 name="join-session-key"
+                placeholder="Cluster ID"
                 oninput=self.link.callback(|e: InputData| Msg::UpdateSessionKey(e.value))
                 onkeypress=self.link.batch_callback(move |e: KeyboardEvent| {
                     if e.key() == "Enter" { Some(Msg::JoinCluster) } else { None }
                 })
                 />
+                </p>
+                <p>
                 <div>
-                <button type="button" onclick=self.link.callback(|_| Msg::ClearStorage)>{ "Clear local storage" }</button>
+                <button type="button" onclick=self.link.callback(|_| Msg::ClearStorage)>{
+                    format!("Clear local storage (currently {} item(s))", local_storage_items)
+                }</button>
                 </div>
                 </p>
                 </>
@@ -191,7 +194,10 @@ where
         html! {
             <>
             <h1>{ "Waiting for cluster to start..." }</h1>
-                <h3>{ format!("Session key is {:032x}", session_key) }</h3>
+                <h3>{ format!("Cluster ID is {:032x}", session_key) }</h3>
+                <p>
+            { other_cluster_members(session_key) }
+                </p>
                 </>
         }
     }
@@ -200,7 +206,7 @@ where
         html! { <C raft=raft /> }
     }
 
-    fn start_raft(&self, session_key: u128, link: ComponentLink<Self>) {
+    fn start_raft(session_key: u128, link: ComponentLink<Self>) {
         spawn_local(async move {
             let hostname = hostname();
             let raft = Raft::start(&hostname, session_key, CLUSTER_SIZE)
@@ -216,9 +222,28 @@ fn generate_session_key() -> u128 {
 }
 
 fn hostname() -> String {
-    web_sys::window()
-        .expect("no global window")
-        .location()
-        .hostname()
-        .unwrap()
+    window().location().hostname().unwrap()
+}
+
+fn local_storage() -> Storage {
+    window().local_storage().unwrap().unwrap()
+}
+
+fn window() -> Window {
+    web_sys::window().unwrap()
+}
+
+fn other_cluster_members(session_key: u128) -> Vec<Html> {
+    let all_targets = vec!["wraft0", "wraft1", "wraft2"];
+    let hostname = hostname();
+    let (me, domain) = hostname.split_once('.').unwrap_or((&hostname, ""));
+    let path = window().location().pathname().unwrap();
+    all_targets.iter().filter(|&t| t != &me).map(|t| {
+        let url = format!("https://{}.{}{}#{:032x}", t, domain, path, session_key);
+        html! {
+            <a href=url target="_blank">
+                <button type="button">{ format!("Open {}", t) }</button>
+                </a>
+        }
+    }).collect()
 }
