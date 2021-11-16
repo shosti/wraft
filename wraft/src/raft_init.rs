@@ -27,6 +27,11 @@ impl<S: raft::State> Clone for RaftWrapper<S> {
     }
 }
 
+#[derive(Properties, Clone)]
+pub struct Props {
+    pub session_key: Option<u128>,
+}
+
 #[derive(Properties)]
 pub struct RaftProps<S: raft::State> {
     pub raft: RaftWrapper<S>,
@@ -70,15 +75,25 @@ where
     S: raft::State + Clone,
 {
     type Message = Msg<S>;
-    type Properties = ();
+    type Properties = Props;
 
-    fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
-        Self {
-            link,
-            state: State::Setup,
-            session_key: "".into(),
-            _component: PhantomData,
-            _message: PhantomData,
+    fn create(props: Self::Properties, link: ComponentLink<Self>) -> Self {
+        if let Some(session_key) = props.session_key {
+            Self {
+                link,
+                state: State::Waiting(session_key),
+                session_key: "".into(),
+                _component: PhantomData,
+                _message: PhantomData,
+            }
+        } else {
+            Self {
+                link,
+                state: State::Setup,
+                session_key: "".into(),
+                _component: PhantomData,
+                _message: PhantomData,
+            }
         }
     }
 

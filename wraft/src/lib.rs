@@ -60,16 +60,25 @@ impl Component for Model {
                                 </>
                         },
                         Route::Todo => html! {
-                            <Todo />
+                            <Todo session_key=get_session_key() />
                         },
                         Route::Benchmark => html! {
-                            <Benchmark />
+                            <Benchmark session_key=get_session_key() />
                         },
                     }
                 })
                 />
         }
     }
+}
+
+fn get_session_key() -> Option<u128> {
+    let hash = web_sys::window()
+        .expect("no global window")
+        .location()
+        .hash()
+        .ok()?;
+    u128::from_str_radix(hash.strip_prefix('#')?, 16).ok()
 }
 
 #[wasm_bindgen(start)]
