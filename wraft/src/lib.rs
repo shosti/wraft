@@ -82,7 +82,7 @@ fn get_session_key() -> Option<u128> {
 }
 
 #[wasm_bindgen(start)]
-pub async fn start() {
+pub fn start() {
     util::set_panic_hook();
 
     yew::start_app::<Model>();

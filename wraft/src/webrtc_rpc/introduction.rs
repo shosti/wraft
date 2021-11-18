@@ -80,7 +80,7 @@ pub async fn initiate(
 
     let (ws, mut errors_rx) = init_ws(&state).await?;
     wait_for_ws_opened(ws.clone()).await;
-    send_join_command(node_id, session_id, &ws).await?;
+    send_join_command(node_id, session_id, &ws)?;
 
     loop {
         select! {
@@ -135,7 +135,7 @@ async fn handle_session_update(session: Session, ws: WebSocket, state: State) ->
 }
 
 async fn introduce(peer_id: u64, ws: WebSocket, state: State) -> Result<(), Error> {
-    let pc = new_peer_connection(peer_id, ws.clone(), state.clone())?;
+    let pc = new_peer_connection(peer_id, ws.clone(), &state)?;
     let dc = pc.create_data_channel(
         format!(
             "data-{:#x}-{:#x}-{:#x}",
@@ -154,7 +154,7 @@ async fn introduce(peer_id: u64, ws: WebSocket, state: State) -> Result<(), Erro
     });
 
     loop {
-        send_offer(peer_id, &sdp_data, &ws, state.clone()).await?;
+        send_offer(peer_id, &sdp_data, &ws, &state)?;
         let mut retry = sleep(Duration::from_secs(5));
         select! {
             res = done_rx => {
@@ -176,7 +176,7 @@ async fn introduce(peer_id: u64, ws: WebSocket, state: State) -> Result<(), Erro
 fn new_peer_connection(
     peer_id: u64,
     ws: WebSocket,
-    state: State,
+    state: &State,
 ) -> Result<RtcPeerConnection, Error> {
     let pc = RtcPeerConnection::new()?;
     let session_id = state.session_id;
@@ -207,7 +207,7 @@ fn send_command(ws: &WebSocket, command: &Command) -> Result<(), Error> {
 
 async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), Error> {
     let peer_id = offer.node_id;
-    let pc = new_peer_connection(peer_id, ws.clone(), state.clone())?;
+    let pc = new_peer_connection(peer_id, ws.clone(), &state)?;
     state.insert_peer(peer_id, pc.clone());
 
     let (dc_tx, dc_rx) = futures::channel::oneshot::channel::<RtcDataChannel>();
@@ -219,7 +219,7 @@ async fn handle_offer(offer: Offer, ws: WebSocket, state: State) -> Result<(), E
     });
 
     let answer_sdp = remote_description(&offer.sdp_data, &pc).await?;
-    send_answer(peer_id, &answer_sdp, &ws, state.clone()).await?;
+    send_answer(peer_id, &answer_sdp, &ws, &state)?;
 
     let dc = dc_rx.await.unwrap();
     state.send_peer(peer_id, dc).await?;
@@ -307,7 +307,7 @@ async fn init_ws(state: &State) -> Result<(WebSocket, Receiver<Error>), Error> {
                     errors.send(err).await.unwrap();
                 }
             }
-        })
+        });
     }) as Box<dyn FnMut(MessageEvent)>);
 
     ws.set_onmessage(Some(message_cb.as_ref().unchecked_ref()));
@@ -341,7 +341,7 @@ async fn wait_for_dc_initiated(dc: RtcDataChannel) {
     dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
 
     if done_rx.next().await.is_none() {
-        unreachable!()
+        unreachable!();
     }
     dc.set_onmessage(None);
 }
@@ -373,11 +373,11 @@ async fn remote_description(sdp_data: &str, pc: &RtcPeerConnection) -> Result<St
     Ok(answer_sdp)
 }
 
-async fn send_offer(
+fn send_offer(
     peer_id: u64,
     sdp_data: &str,
     ws: &WebSocket,
-    state: State,
+    state: &State,
 ) -> Result<(), Error> {
     let cmd = Command::Offer(Offer {
         session_id: state.session_id,
@@ -388,11 +388,11 @@ async fn send_offer(
     send_command(ws, &cmd)
 }
 
-async fn send_answer(
+fn send_answer(
     peer_id: u64,
     answer_sdp: &str,
     ws: &WebSocket,
-    state: State,
+    state: &State,
 ) -> Result<(), Error> {
     let cmd = Command::Answer(Offer {
         session_id: state.session_id,
@@ -403,7 +403,7 @@ async fn send_answer(
     send_command(ws, &cmd)
 }
 
-async fn send_join_command(node_id: u64, session_id: u128, ws: &WebSocket) -> Result<(), Error> {
+fn send_join_command(node_id: u64, session_id: u128, ws: &WebSocket) -> Result<(), Error> {
     let cmd = Command::Join(Join {
         node_id,
         session_id,

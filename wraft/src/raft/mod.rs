@@ -169,7 +169,7 @@ impl<St: State> Raft<St> {
                     server.serve(s).await;
                 });
             }
-            peers = peer_clients.keys().cloned().collect();
+            peers = peer_clients.keys().copied().collect();
             Self::store_peer_configuration(session_key, &peers);
         };
 
@@ -242,7 +242,7 @@ impl<St: State> Raft<St> {
                     match res {
                         Some((k, resp_tx)) => {
                             let val = state.get(k);
-                            let _ = resp_tx.send(val);
+                            let _res = resp_tx.send(val);
                         }
                         None => {
                             console_log!("state get channel closed, exiting state machine handler");
@@ -332,7 +332,7 @@ where
 {
 }
 
-impl<K, V> State for HashMap<K, V>
+impl<K, V, S> State for HashMap<K, V, S>
 where
     K: Serialize
         + DeserializeOwned
@@ -343,6 +343,7 @@ where
         + Debug
         + 'static,
     V: Serialize + DeserializeOwned + Clone + Send + Debug + 'static,
+    S: std::hash::BuildHasher + Default + 'static,
 {
     type Command = HashMapCommand<K, V>;
     type Item = V;

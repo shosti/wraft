@@ -127,7 +127,7 @@ where
     pub fn sublog(&self, indices: impl Iterator<Item = LogIndex>) -> Vec<LogEntry<Cmd>> {
         indices
             .map(|i| self.get_log(i))
-            .filter(|e| e.is_some())
+            .filter(Option::is_some)
             .flatten()
             .collect()
     }
@@ -147,16 +147,13 @@ where
     }
 
     pub fn set_voted_for(&mut self, val: Option<NodeId>) {
-        match val {
-            Some(val) => {
-                self.voted_for = Some(val);
-                let sval = val.to_string();
-                self.set_persistent(&self.voted_for_key, &sval);
-            }
-            None => {
-                self.storage.remove_item(&self.voted_for_key).unwrap();
-                self.voted_for = None;
-            }
+        if let Some(val) = val {
+            self.voted_for = Some(val);
+            let sval = val.to_string();
+            self.set_persistent(&self.voted_for_key, &sval);
+        } else {
+            self.storage.remove_item(&self.voted_for_key).unwrap();
+            self.voted_for = None;
         }
     }
 

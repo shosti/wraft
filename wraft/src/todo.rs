@@ -64,7 +64,7 @@ impl Component for Model {
                 let raft_client = self.raft_client.clone();
                 spawn_local(async move {
                     if let Ok(Some(new_state)) = raft_client.get(()).await {
-                        link.send_message(Msg::GotState(new_state))
+                        link.send_message(Msg::GotState(new_state));
                     }
                 });
                 false
@@ -167,7 +167,7 @@ impl Model {
                         }
                     }
                 }
-            })
+            });
         };
         closure.into()
     }

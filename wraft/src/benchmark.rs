@@ -104,7 +104,7 @@ impl Component for Model {
                 let link = self.link.clone();
                 spawn_local(async move {
                     if let Ok(dump) = client.debug().await {
-                        link.send_message(Msg::StateDumped(dump))
+                        link.send_message(Msg::StateDumped(dump));
                     }
                 });
                 false

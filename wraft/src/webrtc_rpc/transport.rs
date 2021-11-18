@@ -200,7 +200,7 @@ where
                     msg @ Message::Response { idx: _, resp: _ } => {
                         // Got a response to one of our requests, try to process
                         // it on our end
-                        let _ = client_tx.send(msg).await;
+                        let _res = client_tx.send(msg).await;
                     }
                 }
             });
@@ -240,7 +240,7 @@ where
 impl<Req, Resp> Drop for Server<Req, Resp> {
     fn drop(&mut self) {
         if let Some(done) = self.done.take() {
-            let _ = done.send(());
+            let _res = done.send(());
         }
         self.connection.close();
     }
@@ -314,17 +314,17 @@ where
                 let data = bincode::serialize(&msg).unwrap();
                 if let Err(err) = self.dc.send_with_u8_array(&data) {
                     let tx = self.in_flight.remove(idx).unwrap();
-                    let _ = tx.send(Err(Error::from(err)));
+                    let _res = tx.send(Err(Error::from(err)));
                     return;
                 }
                 let mut timeout_tx = self.timeout_tx.clone();
                 spawn_local(async move {
                     sleep(Duration::from_millis(REQUEST_TIMEOUT_MILLIS)).await;
-                    let _ = timeout_tx.send(idx).await;
+                    let _res = timeout_tx.send(idx).await;
                 });
             }
             Err(ringbuf::Error::Overflow(tx)) => {
-                let _ = tx.send(Err(Error::TooManyInFlightRequests));
+                let _res = tx.send(Err(Error::TooManyInFlightRequests));
             }
         }
     }
@@ -336,10 +336,10 @@ where
                     // Best-effort reply (if the caller is gone then one
                     // can assume that the request has been canceled or
                     // something).
-                    let _ = tx.send(resp);
+                    let _res = tx.send(resp);
                 }
                 None => {
-                    console_log!("request {} came in after request canceled", idx)
+                    console_log!("request {} came in after request canceled", idx);
                 }
             }
         }
@@ -348,7 +348,7 @@ where
     fn handle_timeout(&mut self, idx: usize) {
         if let Some(tx) = self.in_flight.remove(idx) {
             console_log!("request {} timed out", idx);
-            let _ = tx.send(Err(Error::RequestTimeout));
+            let _res = tx.send(Err(Error::RequestTimeout));
         }
     }
 }

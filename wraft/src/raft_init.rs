@@ -60,7 +60,7 @@ enum State<S: raft::State> {
     Running(RaftWrapper<S>),
 }
 
-pub struct Model<C: Component<Properties = RaftProps<S>>, S: raft::State>
+pub struct Model<C: Component<Properties = RaftProps<S>>, S>
 where
     S: raft::State + Clone,
 {

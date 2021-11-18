@@ -167,7 +167,7 @@ where
         (self.inner.cluster_size / 2) + 1
     }
 
-    fn handle_request_vote(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
+    fn handle_request_vote(&mut self, req: &RequestVoteRequest) -> RequestVoteResponse {
         let voted_for = self.inner.storage.voted_for();
         let current_term = self.inner.storage.current_term();
         if req.term >= current_term
@@ -188,7 +188,7 @@ where
         }
     }
 
-    fn handle_append_entries(&mut self, req: AppendEntriesRequest<Cmd>) -> AppendEntriesResponse {
+    fn handle_append_entries(&mut self, req: &AppendEntriesRequest<Cmd>) -> AppendEntriesResponse {
         let current_term = self.inner.storage.current_term();
         if req.term < current_term {
             return AppendEntriesResponse {
@@ -228,7 +228,7 @@ where
     }
 
     fn handle_debug(&self, tx: oneshot::Sender<ClientResult<Cmd>>) {
-        let _ = tx.send(Ok(ClientResponse::Debug(Box::new(self.into()))));
+        let _res = tx.send(Ok(ClientResponse::Debug(Box::new(self.into()))));
     }
 
     fn apply_log(&mut self) {
@@ -284,7 +284,7 @@ where
                     let (req, resp_tx) = res.expect("Client channel closed");
                     match req {
                         ClientRequest::Debug => self.handle_debug(resp_tx),
-                        _ => self.forward_client_request(req, resp_tx),
+                        ClientRequest::Apply(_) => self.forward_client_request(req, resp_tx),
                     }
                 }
                 res = self.inner.peers_rx.next() => {
@@ -307,7 +307,7 @@ where
         match req {
             RpcRequest::RequestVote(req) => {
                 self.inner.storage.update_term(req.term);
-                let resp = self.handle_request_vote(req);
+                let resp = self.handle_request_vote(&req);
                 resp_tx
                     .send(Ok(RpcResponse::RequestVote(resp)))
                     .expect("RPC response channel closed");
@@ -315,7 +315,7 @@ where
             RpcRequest::AppendEntries(req) => {
                 self.inner.storage.update_term(req.term);
                 self.inner.leader_id = Some(req.leader_id);
-                let resp = self.handle_append_entries(req);
+                let resp = self.handle_append_entries(&req);
                 resp_tx
                     .send(Ok(RpcResponse::AppendEntries(resp)))
                     .expect("RPC response channel closed");
@@ -344,21 +344,21 @@ where
                     spawn_local(async move {
                         match client.call(RpcRequest::ForwardClientRequest(req)).await {
                             Ok(RpcResponse::ForwardClientRequest(resp)) => {
-                                let _ = resp_tx.send(resp);
+                                let _res = resp_tx.send(resp);
                             }
                             Err(err) => {
                                 console_log!("error forwarding request: {:?}", err);
-                                let _ = resp_tx.send(Err(ClientError::Unavailable));
+                                let _res = resp_tx.send(Err(ClientError::Unavailable));
                             }
                             _ => unreachable!(),
                         }
                     });
                 } else {
-                    let _ = resp_tx.send(Err(ClientError::Unavailable));
+                    let _res = resp_tx.send(Err(ClientError::Unavailable));
                 }
             }
             None => {
-                let _ = resp_tx.send(Err(ClientError::Unavailable));
+                let _res = resp_tx.send(Err(ClientError::Unavailable));
             }
         }
     }
@@ -399,7 +399,7 @@ where
                     match req {
                         ClientRequest::Debug => self.handle_debug(resp_tx),
                         _ => {
-                            let _ = resp_tx.send(Err(ClientError::Unavailable));
+                            let _res = resp_tx.send(Err(ClientError::Unavailable));
                         }
                     }
                 }
@@ -426,7 +426,7 @@ where
         match req {
             RpcRequest::RequestVote(req) => {
                 let new_term = self.inner.storage.update_term(req.term);
-                let resp = self.handle_request_vote(req);
+                let resp = self.handle_request_vote(&req);
                 resp_tx
                     .send(Ok(RpcResponse::RequestVote(resp)))
                     .expect("RPC response channel closed");
@@ -440,7 +440,7 @@ where
             }
             RpcRequest::AppendEntries(req) => {
                 self.inner.storage.update_term(req.term);
-                let resp = self.handle_append_entries(req);
+                let resp = self.handle_append_entries(&req);
                 resp_tx
                     .send(Ok(RpcResponse::AppendEntries(resp)))
                     .expect("RPC response channel closed");
@@ -480,7 +480,7 @@ where
                     Ok(RpcResponse::RequestVote(resp)) if resp.vote_granted => {
                         // If channel is closed, the election is probably over so ignore
                         // the error
-                        let _ = tx.send(()).await;
+                        let _res = tx.send(()).await;
                     }
                     Ok(RpcResponse::RequestVote(_)) => {
                         // We don't really care if we didn't get a vote
@@ -566,7 +566,7 @@ where
 
         for idx in next_commit_index..=self.inner.commit_index {
             if let Some(tx) = self.state.in_flight_client_requests.remove(&idx) {
-                let _ = tx.send(Ok(ClientResponse::Ack));
+                let _res = tx.send(Ok(ClientResponse::Ack));
             }
         }
     }
@@ -611,7 +611,7 @@ where
             let mut tx = self.state.responses_tx.clone();
             spawn_local(async move {
                 let resp = client.call(req).await;
-                let _ = tx.send((peer_id, first_entry..=last_entry, resp)).await;
+                let _res = tx.send((peer_id, first_entry..=last_entry, resp)).await;
             });
         }
     }
@@ -670,39 +670,37 @@ where
         match req {
             RpcRequest::AppendEntries(req) => {
                 if self.inner.storage.update_term(req.term) {
-                    let resp = self.handle_append_entries(req);
+                    let resp = self.handle_append_entries(&req);
                     resp_tx
                         .send(Ok(RpcResponse::AppendEntries(resp)))
                         .expect("response channel closed");
                     return StateChange::BecomeFollower;
-                } else {
-                    let resp = RpcResponse::AppendEntries(AppendEntriesResponse {
-                        term,
-                        success: false,
-                    });
-                    resp_tx.send(Ok(resp)).expect("response channel closed");
                 }
+                let resp = RpcResponse::AppendEntries(AppendEntriesResponse {
+                    term,
+                    success: false,
+                });
+                resp_tx.send(Ok(resp)).expect("response channel closed");
             }
             RpcRequest::RequestVote(req) => {
                 if self.inner.storage.update_term(req.term) {
-                    let resp = self.handle_request_vote(req);
+                    let resp = self.handle_request_vote(&req);
                     resp_tx
                         .send(Ok(RpcResponse::RequestVote(resp)))
                         .expect("response channel closed");
                     return StateChange::BecomeFollower;
-                } else {
-                    let resp = RpcResponse::RequestVote(RequestVoteResponse {
-                        term,
-                        vote_granted: false,
-                    });
-                    resp_tx.send(Ok(resp)).expect("response channel closed");
                 }
+                let resp = RpcResponse::RequestVote(RequestVoteResponse {
+                    term,
+                    vote_granted: false,
+                });
+                resp_tx.send(Ok(resp)).expect("response channel closed");
             }
             RpcRequest::ForwardClientRequest(req) => {
                 let (tx, rx) = oneshot::channel();
                 spawn_local(async move {
                     if let Ok(resp) = rx.await {
-                        let _ = resp_tx.send(Ok(RpcResponse::ForwardClientRequest(resp)));
+                        let _res = resp_tx.send(Ok(RpcResponse::ForwardClientRequest(resp)));
                     }
                 });
                 self.handle_client_request(req, tx, heartbeat);
@@ -741,7 +739,7 @@ where
 
         let peers = self.inner.peers.clone();
         for peer in peers {
-            self.append_entries(peer)
+            self.append_entries(peer);
         }
     }
 }
