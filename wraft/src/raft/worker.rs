@@ -158,7 +158,7 @@ where
     S: std::fmt::Debug,
     Cmd: Command,
 {
-    fn election_timeout(&self) -> Sleep {
+    fn election_timeout() -> Sleep {
         let delay = thread_rng().gen_range(1000..1500);
         sleep(Duration::from_millis(delay))
     }
@@ -271,7 +271,7 @@ where
 
     async fn next(mut self) -> RaftWorkerState<Cmd> {
         console_log!("BEING A FOLLOWER");
-        let mut timeout = self.election_timeout();
+        let mut timeout = Self::election_timeout();
 
         loop {
             self.apply_log();
@@ -321,7 +321,7 @@ where
                     .expect("RPC response channel closed");
 
                 // Got heartbeat, reset timeout
-                *timeout = self.election_timeout();
+                *timeout = Self::election_timeout();
             }
             RpcRequest::ForwardClientRequest(_) => {
                 console_log!("got forwarded request while follower");
@@ -375,7 +375,7 @@ where
         let mut votes = 1; // Voted for self
 
         let mut votes_rx = self.request_votes();
-        let mut timeout = self.election_timeout();
+        let mut timeout = Self::election_timeout();
         loop {
             self.apply_log();
             select! {
@@ -538,7 +538,7 @@ where
                     for peer in peers {
                         self.append_entries(peer);
                     }
-                    heartbeat = self.heartbeat_timeout();
+                    heartbeat = Self::heartbeat_timeout();
                 }
             }
         }
@@ -656,7 +656,7 @@ where
         }
     }
 
-    fn heartbeat_timeout(&self) -> Sleep {
+    fn heartbeat_timeout() -> Sleep {
         sleep(Duration::from_millis(HEARBEAT_INTERVAL_MILLIS))
     }
 
@@ -720,7 +720,7 @@ where
             ClientRequest::Apply(cmd) => {
                 self.handle_log_update(cmd, resp_tx);
                 // Reset the heartbeat since we presumably contacted all peers
-                *heartbeat = self.heartbeat_timeout();
+                *heartbeat = Self::heartbeat_timeout();
             }
             ClientRequest::Debug => self.handle_debug(resp_tx),
         }

@@ -146,8 +146,8 @@ where
     fn view(&self) -> Html {
         match &self.state {
             State::Setup => self.render_setup(),
-            State::Waiting(session_key) => self.render_waiting(*session_key),
-            State::Running(raft) => self.render_running(raft.clone()),
+            State::Waiting(session_key) => Self::render_waiting(*session_key),
+            State::Running(raft) => Self::render_running(raft.clone()),
         }
     }
 }
@@ -190,7 +190,7 @@ where
         }
     }
 
-    fn render_waiting(&self, session_key: u128) -> Html {
+    fn render_waiting(session_key: u128) -> Html {
         html! {
             <>
             <h1>{ "Waiting for cluster to start..." }</h1>
@@ -202,7 +202,7 @@ where
         }
     }
 
-    fn render_running(&self, raft: RaftWrapper<S>) -> Html {
+    fn render_running(raft: RaftWrapper<S>) -> Html {
         html! { <C raft=raft /> }
     }
 
