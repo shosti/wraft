@@ -1,13 +1,14 @@
 mod errors;
-use std::env;
 use errors::Error;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast::{channel, Sender};
 use tokio::sync::mpsc;
 use tokio_tungstenite::accept_hdr_async;
@@ -46,9 +47,7 @@ impl Channels {
     pub fn joined(&self, node_id: u64, session_id: u128) -> Result<(), Error> {
         {
             let mut os = self.online.write().unwrap();
-            let o = os
-                .entry(session_id)
-                .or_insert_with(HashSet::new);
+            let o = os.entry(session_id).or_insert_with(HashSet::new);
             o.insert(node_id);
         }
         self.broadcast_session_info(session_id)
@@ -101,6 +100,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("listening on {}", addr);
     let listener = TcpListener::bind(addr).await?;
     let channels = Channels::default();
+    tokio::spawn(async {
+        let mut stream = signal(SignalKind::terminate()).unwrap();
+        stream.recv().await;
+        println!("got SIGTERM, exiting");
+        std::process::exit(0);
+    });
 
     loop {
         let ch = channels.clone();
