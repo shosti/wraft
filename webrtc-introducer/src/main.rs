@@ -1,4 +1,5 @@
 mod errors;
+use std::env;
 use errors::Error;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
@@ -94,8 +95,10 @@ impl Channels {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let addr = args[1].to_string();
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let listen = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let addr = format!("{}:{}", listen, port);
+    println!("listening on {}", addr);
     let listener = TcpListener::bind(addr).await?;
     let channels = Channels::default();
 
