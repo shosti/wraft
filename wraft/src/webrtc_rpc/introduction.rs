@@ -21,7 +21,7 @@ use web_sys::{
 };
 use webrtc_introducer_types::{Command, IceCandidate, Join, Offer, Session};
 
-static INTRODUCER: &str = "wss://webrtc-introducer.herokuapp.com";
+static INTRODUCER: &str = "wss://webrtc-introducer.eevans.co";
 static ACK: &str = "ACK";
 
 type PeerInfo = (u64, RtcPeerConnection, RtcDataChannel);
