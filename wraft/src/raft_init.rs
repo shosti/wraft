@@ -196,6 +196,8 @@ where
             <h1>{ "Waiting for cluster to start..." }</h1>
                 <h3>{ format!("Cluster ID is {:032x}", session_key) }</h3>
                 <p>
+            { "Open one browser window with each cluster member to start the cluster." }
+            <h4>{ "Other cluster members:" }</h4>
             { other_cluster_members(session_key) }
                 </p>
                 </>
@@ -241,9 +243,8 @@ fn other_cluster_members(session_key: u128) -> Vec<Html> {
     all_targets.iter().filter(|&t| t != &me).map(|t| {
         let url = format!("https://{}.{}{}#{:032x}", t, domain, path, session_key);
         html! {
-            <a href=url target="_blank">
-                <button type="button">{ format!("Open {}", t) }</button>
-                </a>
+            <div>
+                <a href=url.clone() target="_blank">{ url }</a></div>
         }
     }).collect()
 }
