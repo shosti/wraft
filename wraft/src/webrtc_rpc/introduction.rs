@@ -323,26 +323,23 @@ async fn init_ws(state: &State) -> Result<(WebSocket, Receiver<Error>), Error> {
 }
 
 async fn wait_for_dc_initiated(dc: RtcDataChannel) {
-    let (done_tx, mut done_rx) = channel::<()>(1);
+    let (done_tx, done_rx) = oneshot::channel::<()>();
 
-    let data_cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
+    let data_cb = Closure::once(move |ev: MessageEvent| {
         match ev.data().as_string() {
             Some(msg) if msg == ACK => {
                 // When we get a message from the peer, we know the data channel is
                 // ready!
-                let mut tx = done_tx.clone();
                 spawn_local(async move {
-                    tx.send(()).await.unwrap();
+                    done_tx.send(()).unwrap();
                 });
             }
             msg => panic!("Unexpected message on data stream: {:#?}", msg),
         }
-    }) as Box<dyn FnMut(MessageEvent)>);
+    });
     dc.set_onmessage(Some(data_cb.as_ref().unchecked_ref()));
 
-    if done_rx.next().await.is_none() {
-        unreachable!();
-    }
+    done_rx.await.unwrap();
     dc.set_onmessage(None);
 }
 
