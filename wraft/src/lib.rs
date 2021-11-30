@@ -59,7 +59,8 @@ impl Component for Model {
                                 </ul>
                                 <h2>{ "What is this?" }</h2>
                                 <p>{ "This is a toy implementation of the " }<a href="https://raft.github.io/">{"Raft algorithm"}</a>{ " running in browser windows over WebRTC." }</p>
-                                <p>{ "For more information, see the " }<a href="https://github.com/shosti/wraft">{ "code" }</a>{" and accompanying "}<a href="https://eevans.co/blog/wraft/">{"blog post"}</a></p>
+                                <p>{ "For more information, see the " }<a href="https://github.com/shosti/wraft">{ "code" }</a>{" and accompanying "}<a href="https://eevans.co/blog/wraft/">{"blog post"}</a>{ "." }</p>
+                                <p>{ "WRaft currently doesn't work on Safari or mobile." }</p>
                                 </>
                         },
                         Route::Todo => html! {
