@@ -1,6 +1,6 @@
 .PHONY: build-images push-images
 INTRODUCER_VERSION=v1
-WRAFT_VERSION=v2
+WRAFT_VERSION=v3
 
 build-images:
 	docker build . -f Dockerfile.wraft -t harbor.eevans.me/library/wraft:$(WRAFT_VERSION)

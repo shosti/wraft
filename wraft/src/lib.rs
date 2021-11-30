@@ -57,6 +57,9 @@ impl Component for Model {
                                 <li><RouterAnchor<Route> route=Route::Todo>{ "Todos" }</RouterAnchor<Route>></li>
                                 <li><RouterAnchor<Route> route=Route::Benchmark>{ "Benchmark" }</RouterAnchor<Route>></li>
                                 </ul>
+                                <h2>{ "What is this?" }</h2>
+                                <p>{ "This is a toy implementation of the " }<a href="https://raft.github.io/">{"Raft algorithm"}</a>{ " running in browser windows over WebRTC." }</p>
+                                <p>{ "For more information, see the " }<a href="https://github.com/shosti/wraft">{ "code" }</a>{" and accompanying "}<a href="https://eevans.co/blog/wraft/">{"blog post"}</a></p>
                                 </>
                         },
                         Route::Todo => html! {
